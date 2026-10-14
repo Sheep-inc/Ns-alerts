@@ -6,7 +6,7 @@ import path from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
-import { DAYS, activeWindow, createApp, decodeNsBody } from "../app.js";
+import { DAYS, activeWindow, createApp, decodeNsBody, oneTimeFinished } from "../app.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const open = [];
@@ -53,6 +53,17 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
     assert.equal(activeWindow(sub, thu(8, 17, 1), 60), null);
     assert.equal(activeWindow(sub, new Date(2026, 9, 17, 8, 0), 60), null);
     assert.ok(activeWindow({ time: "08:12" }, new Date(2026, 9, 17, 8, 0), 60));
+    const once = { time: "08:12", date: "2026-10-15" };
+    assert.ok(activeWindow(once, new Date(2026, 9, 15, 8, 0), 60));
+    assert.equal(activeWindow(once, new Date(2026, 9, 16, 8, 0), 60), null);
+    assert.equal(activeWindow(once, new Date(2026, 9, 14, 23, 30), 60), null);
+    assert.equal(oneTimeFinished({ time: "08:12", days: ["do"] }, new Date(2026, 9, 16, 12, 0)), false);
+    assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 8, 17), null), false);
+    assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 8, 17, 1), null), true);
+    assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 7, 0), null), false);
+    assert.equal(oneTimeFinished(once, new Date(2026, 9, 16, 9, 0), null), true);
+    assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 8, 14), "2026-10-15T08:15:00+0200"), false);
+    assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 8, 15), "2026-10-15T08:15:00+0200"), true);
   });
 
   test("decodeNsBody gunzips disruptions payloads and parses plain JSON", () => {
@@ -113,6 +124,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       const page = await call(app, "/");
       assert.equal(page.status, 200);
       assert.ok(page.text.includes("NS treinalerts"));
+      assert.ok(page.text.includes("Eenmalig"));
       assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
 
       const st = await call(app, "/api/status");
@@ -134,12 +146,25 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(created.status, 200);
       assert.equal(created.body.from, "UT");
       assert.equal(created.body.to, "ASD");
+      assert.equal(created.body.date, undefined);
+      assert.deepEqual(created.body.days, ["ma", "di"]);
       assert.match(created.body.id, /^[0-9a-f]{8}$/);
+      const once = await call(app, "/api/subs", {
+        method: "POST",
+        body: JSON.stringify({ from: "ut", to: "asd", time: "09:00", date: "2026-10-20", label: "Een keer" }),
+      });
+      assert.equal(once.status, 200);
+      assert.equal(once.body.date, "2026-10-20");
+      assert.equal(once.body.days, undefined);
+      assert.equal((await call(app, "/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", time: "09:00", date: "2026-13-40" }) })).status, 400);
       const listed = await call(app, "/api/subs");
-      assert.equal(listed.body.length, 1);
+      assert.equal(listed.body.length, 2);
+      assert.equal(listed.body[1].date, "2026-10-20");
+      assert.equal(listed.body[0].date, undefined);
       assert.deepEqual(JSON.parse(readFileSync(path.join(dataDir, "subscriptions.json"), "utf8")), listed.body);
 
       assert.equal((await call(app, `/api/subs/${created.body.id}`, { method: "DELETE" })).body.ok, true);
+      assert.equal((await call(app, `/api/subs/${once.body.id}`, { method: "DELETE" })).body.ok, true);
       assert.deepEqual((await call(app, "/api/export")).body, []);
 
       const example = JSON.parse(readFileSync(path.join(root, "subs.example.json"), "utf8"));
@@ -149,6 +174,14 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(exp.body[0].from, "UT");
       assert.ok(exp.body[0].id);
       assert.deepEqual(exp.body[1].days, ["ma", "wo"]);
+      const dated = await call(app, "/api/import", {
+        method: "POST",
+        body: JSON.stringify([{ from: "UT", time: "07:00", date: "2026-11-01", to: "ASD" }]),
+      });
+      assert.equal(dated.body.count, 1);
+      const datedList = await call(app, "/api/export");
+      assert.equal(datedList.body[0].date, "2026-11-01");
+      assert.equal(datedList.body[0].days, undefined);
       assert.equal((await call(app, "/api/import", { method: "POST", body: "{}" })).status, 400);
 
       assert.equal((await call(app, "/api/settings", { method: "POST", body: JSON.stringify({ threshold: "4" }) })).body.ok, true);
@@ -173,6 +206,69 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
     } finally {
       await app.close();
       await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("one-time subs are removed after the window and recurring subs stay", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, "subscriptions.json"), JSON.stringify([
+      { id: "once0001", from: "UT", to: "ASD", time: "08:12", date: "2026-10-15" },
+      { id: "week0001", from: "UT", to: "ASD", time: "08:12", days: ["ma", "di", "wo", "do", "vr"] },
+    ]));
+    const app = await boot({ base: root, dataDir, port: 0, env: { PORT: "0" } });
+    try {
+      await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
+      let saved = JSON.parse(readFileSync(app.subsFile, "utf8"));
+      assert.deepEqual(saved.map((s) => s.id).sort(), ["once0001", "week0001"]);
+      await app.pollOnce(new Date(2026, 9, 15, 8, 18, 0));
+      saved = JSON.parse(readFileSync(app.subsFile, "utf8"));
+      assert.deepEqual(saved.map((s) => s.id), ["week0001"]);
+    } finally { await app.close(); rmSync(base, { recursive: true, force: true }); }
+  });
+
+  test("one-time sub is removed after arrival inside the departure window", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, "subscriptions.json"), JSON.stringify([
+      { id: "oncearr1", from: "UT", fromName: "Utrecht", to: "ASD", toName: "Amsterdam", time: "08:12", date: "2026-10-15" },
+    ]));
+    const realFetch = globalThis.fetch;
+    const trip = {
+      trips: [{
+        status: "NORMAL",
+        legs: [{
+          travelType: "PUBLIC_TRANSIT",
+          product: { number: "1" },
+          origin: { stationCode: "UT", plannedDateTime: "2026-10-15T08:12:00+0200", actualDateTime: "2026-10-15T08:12:00+0200", plannedTrack: "5", actualTrack: "5" },
+          destination: { stationCode: "ASD", plannedDateTime: "2026-10-15T08:20:00+0200", actualDateTime: "2026-10-15T08:14:00+0200" },
+        }],
+      }],
+    };
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (u.startsWith("https://gateway.apiportal.ns.nl")) {
+        if (u.includes("/disruptions/")) return new Response("down", { status: 500 });
+        return new Response(JSON.stringify(trip), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return realFetch(url, opts);
+    };
+    const app = await boot({
+      base: root,
+      dataDir,
+      port: 0,
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "t", PORT: "0" },
+    });
+    try {
+      await app.pollOnce(new Date(2026, 9, 15, 8, 14, 0));
+      const saved = JSON.parse(readFileSync(app.subsFile, "utf8"));
+      assert.deepEqual(saved, []);
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
       rmSync(base, { recursive: true, force: true });
     }
   });

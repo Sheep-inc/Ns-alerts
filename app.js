@@ -62,16 +62,52 @@ export function isoOffsetSeconds(date) {
   return `${isoNaive(date)}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
-export function activeWindow(sub, now, windowMin) {
-  const days = sub.days || DAYS;
-  if (!days.includes(DAYS[(now.getDay() + 6) % 7])) return null;
+export function isoDate(date) {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function clockMs(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(String(iso || ""));
+  if (!m) return null;
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+}
+
+function departureOnDate(sub) {
+  const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(sub.date || "");
+  if (!p) return null;
   const [h, m] = String(sub.time).split(":").map((x) => Number(x));
-  const dep = new Date(now);
-  dep.setHours(h, m, 0, 0);
+  return new Date(+p[1], +p[2] - 1, +p[3], h, m, 0, 0);
+}
+
+export function activeWindow(sub, now, windowMin) {
+  const [h, m] = String(sub.time).split(":").map((x) => Number(x));
+  let dep;
+  if (sub.date) {
+    if (isoDate(now) !== sub.date) return null;
+    dep = departureOnDate(sub);
+    if (!dep) return null;
+  } else {
+    const days = sub.days || DAYS;
+    if (!days.includes(DAYS[(now.getDay() + 6) % 7])) return null;
+    dep = new Date(now);
+    dep.setHours(h, m, 0, 0);
+  }
   const start = dep.getTime() - windowMin * 60000;
   const end = dep.getTime() + 5 * 60000;
   if (start <= now.getTime() && now.getTime() <= end) return dep;
   return null;
+}
+
+/** One-time subs (field `date`) end after departure + 5 min, or once arrival has passed. */
+export function oneTimeFinished(sub, now, arrivalIso) {
+  if (!sub?.date) return false;
+  const dep = departureOnDate(sub);
+  if (!dep) return false;
+  if (arrivalIso) {
+    const arr = clockMs(arrivalIso);
+    if (arr != null && now.getTime() >= arr) return true;
+  }
+  return now.getTime() > dep.getTime() + 5 * 60000;
 }
 
 function log(level, message) {
@@ -87,6 +123,13 @@ function safeEqual(a, b) {
   const bb = Buffer.from(String(b));
   if (ba.length !== bb.length) return false;
   return crypto.timingSafeEqual(ba, bb);
+}
+
+function validDate(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  const dt = new Date(+m[1], +m[2] - 1, +m[3]);
+  return dt.getFullYear() === +m[1] && dt.getMonth() === +m[2] - 1 && dt.getDate() === +m[3];
 }
 
 function pyInt(v) {
@@ -282,15 +325,19 @@ export function createApp(opts = {}) {
   async function pollOnceInner(now) {
     const cfg = config();
     const when = now || new Date();
+    let subs = readJson(subsFile, []);
+    if (!Array.isArray(subs)) subs = [];
+    const drop = new Set(subs.filter((sub) => oneTimeFinished(sub, when)).map((sub) => sub.id));
     if (!apiKey()) {
+      if (drop.size) writeJson(subsFile, subs.filter((s) => !drop.has(s.id)));
       status.error = "NS_API_KEY missing";
       status.last_poll = isoNaive(when);
       return;
     }
-    const subs = readJson(subsFile, []);
     const st = readJson(stateFile, {});
-    const today = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}`;
+    const today = isoDate(when);
     for (const sub of subs) {
+      if (drop.has(sub.id)) continue;
       let dep;
       try { dep = activeWindow(sub, when, cfg.window_min); }
       catch (e) { log("WARNING", `check ${sub.id} failed: ${errStr(e)}`); status.error = errStr(e); continue; }
@@ -309,6 +356,11 @@ export function createApp(opts = {}) {
         try { await ntfy(title, body, prio); }
         catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
       }
+      if (oneTimeFinished(sub, when, cur.arrival)) drop.add(sub.id);
+    }
+    if (drop.size) {
+      const fresh = readJson(subsFile, []);
+      writeJson(subsFile, (Array.isArray(fresh) ? fresh : []).filter((s) => !drop.has(s.id)));
     }
     const next = {};
     for (const [k, v] of Object.entries(st)) if (k.endsWith(today)) next[k] = v;
@@ -423,6 +475,8 @@ export function createApp(opts = {}) {
     if (u.pathname === "/api/subs") {
       const b = await readBody(req);
       if (!b.from || !(b.to || b.train) || !b.time) return send(res, 400, { error: "van, naar/treinnummer en tijd verplicht" });
+      const date = typeof b.date === "string" ? b.date.trim() : "";
+      if (date && !validDate(date)) return send(res, 400, { error: "datum moet JJJJ-MM-DD zijn" });
       const sub = {
         from: String(b.from).toUpperCase(),
         fromName: b.fromName ?? null,
@@ -431,9 +485,12 @@ export function createApp(opts = {}) {
         time: b.time ?? null,
         label: b.label ?? null,
         train: b.train ?? null,
-        days: b.days && !(Array.isArray(b.days) && b.days.length === 0) ? b.days : DAYS.slice(0, 5),
         id: crypto.randomBytes(4).toString("hex"),
       };
+      if (date) sub.date = date;
+      const explicitDays = b.days && !(Array.isArray(b.days) && b.days.length === 0) ? b.days : null;
+      if (explicitDays) sub.days = explicitDays;
+      else if (!date) sub.days = DAYS.slice(0, 5);
       const s = readJson(subsFile, []);
       s.push(sub);
       writeJson(subsFile, s);
@@ -446,7 +503,7 @@ export function createApp(opts = {}) {
       }
       for (const x of b) {
         if (!Object.prototype.hasOwnProperty.call(x, "id")) x.id = crypto.randomBytes(4).toString("hex");
-        if (!Object.prototype.hasOwnProperty.call(x, "days")) x.days = DAYS.slice(0, 5);
+        if (!Object.prototype.hasOwnProperty.call(x, "days") && !x.date) x.days = DAYS.slice(0, 5);
       }
       writeJson(subsFile, b);
       return send(res, 200, { ok: true, count: b.length });

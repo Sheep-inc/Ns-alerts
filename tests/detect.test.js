@@ -17,6 +17,7 @@ test("parse trip", () => {
   assert.equal(cur.delay, 7);
   assert.equal(cur.track, "18");
   assert.equal(cur.trainNumber, "3014");
+  assert.equal(cur.arrival, "2026-10-15T08:39:00+0200");
 });
 
 test("first notification format", () => {

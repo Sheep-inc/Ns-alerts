@@ -10,8 +10,9 @@ Node.js 20 of nieuwer (LTS), alleen de standaardbibliotheek — geen extra npm-p
 - **Config** (`data/config.json`): `delay_threshold` (3), `delay_grow` (5 = nieuwe melding als vertraging ≥5 min verandert), `window_min` (60), `poll_sec` (120).
 - **Tests:** `npm test`
 - **Seed:** bij de eerste start, als `data/subscriptions.json` nog niet bestaat en `seed/subscriptions.json` wél, wordt dat bestand gekopieerd. Standaardpad `./seed/subscriptions.json` (naast de app), overschrijfbaar met `SEED_FILE`. `seed/*.json` staat in `.gitignore`, behalve `seed/subscriptions.example.json`.
+- **Eenmalig:** vink 'Eenmalig' aan en kies een datum (`date`, `JJJJ-MM-DD`, standaard vandaag). Het abonnement wordt alleen die dag gevolgd en verdwijnt vanzelf na het venster (vertrek + 5 min, of zodra de trein is aangekomen). Abonnementen met alleen `days` blijven werken.
 
-Werking: per actief abonnement (juiste weekdag) wordt van 60 min vóór tot 5 min na vertrek elke 2 min gecheckt
+Werking: per actief abonnement (juiste weekdag, of de gekozen datum) wordt van 60 min vóór tot 5 min na vertrek elke 2 min gecheckt
 (trips v3 voor routes, departures v2 voor treinnummers, plus disruptions v3; cache + max ~1 req/s).
 Disruptions-antwoorden mogen gzip zijn. Trip-teksten komen uit `messages` en uit geneste `notes`-lijsten (`noteType` anders dan `ATTRIBUTE`). `partCancelled` geeft een melding dat de rit deels vervalt.
 Alleen bij een *wijziging* komt een melding (incl. "weer op tijd"). Uitval = priority urgent.

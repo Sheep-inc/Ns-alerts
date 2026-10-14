@@ -64,8 +64,10 @@ export function stateFromTrip(trip) {
     if (a) stations.push(a);
     if (b) stations.push(b);
   }
+  const dest = legs[legs.length - 1]?.destination || {};
   return {
     planned: o.plannedDateTime ?? null,
+    arrival: dest.actualDateTime || dest.plannedDateTime || null,
     delay: delayMin(o.plannedDateTime, o.actualDateTime),
     plannedTrack: o.plannedTrack ?? null,
     track: o.actualTrack || o.plannedTrack || null,
