@@ -1,0 +1,16 @@
+services:
+  ns-alerts:
+    build: .
+    container_name: ns-alerts
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8780:8780"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      # /api/status (met basic auth als UI_PASSWORD gezet is)
+      test: ["CMD", "python", "-c", "import os,base64,urllib.request as u;r=u.Request('http://127.0.0.1:8780/api/status');p=os.environ.get('UI_PASSWORD');p and r.add_header('Authorization','Basic '+base64.b64encode(('x:'+p).encode()).decode());u.urlopen(r,timeout=4)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3

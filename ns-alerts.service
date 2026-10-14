@@ -1,0 +1,17 @@
+# Kopieer naar /etc/systemd/system/ns-alerts.service en pas paden/gebruiker aan
+[Unit]
+Description=NS treinalerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=nsalerts
+WorkingDirectory=/opt/ns-alerts
+EnvironmentFile=/opt/ns-alerts/.env
+Environment=TZ=Europe/Amsterdam
+ExecStart=/usr/bin/python3 /opt/ns-alerts/app.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

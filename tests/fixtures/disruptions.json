@@ -1,0 +1,2 @@
+[{"id":"7_123","type":"DISRUPTION","title":"Utrecht Centraal - Amsterdam Centraal","isActive":true,"publicationSections":[{"section":{"stations":[{"stationCode":"UT"},{"stationCode":"ASD"}]}}]},
+ {"id":"7_999","type":"MAINTENANCE","title":"Zwolle - Groningen","isActive":true,"publicationSections":[{"section":{"stations":[{"stationCode":"ZL"},{"stationCode":"GN"}]}}]}]
