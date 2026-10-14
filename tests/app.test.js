@@ -125,6 +125,8 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(page.status, 200);
       assert.ok(page.text.includes("NS treinalerts"));
       assert.ok(page.text.includes("Eenmalig"));
+      assert.ok(page.text.includes("Dagelijkse check"));
+      assert.ok(page.text.includes("Nu checken"));
       assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
 
       const st = await call(app, "/api/status");
@@ -132,6 +134,11 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(st.body.topic, "topic-vast");
       assert.equal(st.body.server, ntfy.url);
       assert.equal(st.body.threshold, 3);
+      assert.equal(st.body.digest_enabled, true);
+      assert.deepEqual(st.body.digest_times, ["06:00", "21:00"]);
+      assert.equal(st.body.digest_quiet, false);
+      assert.equal(st.body.last_digest, null);
+      assert.equal((await call(app, "/api/digest", { method: "POST" })).status, 503);
       assert.equal((await call(app, "/api/status", { password: "fout" })).status, 401);
       assert.equal((await call(app, "/api/stations?q=ut")).status, 503);
 
@@ -260,7 +267,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       base: root,
       dataDir,
       port: 0,
-      env: { NS_API_KEY: "test-key", NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "t", PORT: "0" },
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "t", PORT: "0", DIGEST_ENABLED: "0" },
     });
     try {
       await app.pollOnce(new Date(2026, 9, 15, 8, 14, 0));
@@ -313,7 +320,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       base: root,
       dataDir,
       port: 0,
-      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "poll-topic", PORT: "0", UI_PASSWORD: "" },
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "poll-topic", PORT: "0", UI_PASSWORD: "", DIGEST_ENABLED: "0" },
     });
     try {
       await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
@@ -332,6 +339,114 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.ok(state["route0001@2026-10-15"]);
       assert.equal(state["route0001@2026-10-15"].delay, 7);
       assert.ok(state["train0001@2026-10-15"].cancelled);
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("daily digest fetches all disruptions, dedupes and can be triggered now", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, "subscriptions.json"), JSON.stringify([
+      { id: "route0001", from: "UT", to: "ASD", time: "08:12", days: ["ma", "di", "wo", "do", "vr"] },
+    ]));
+    const disruptions = JSON.parse(readFileSync(path.join(root, "tests/fixtures/digest_disruptions.json"), "utf8"));
+    const seen = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (u.startsWith("https://gateway.apiportal.ns.nl")) {
+        seen.push(u);
+        if (u === "https://gateway.apiportal.ns.nl/disruptions/v3") {
+          return new Response(JSON.stringify(disruptions), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        return new Response("missing", { status: 500 });
+      }
+      return realFetch(url, opts);
+    };
+    const hits = [];
+    let failNtfy = true;
+    const ntfy = await listen((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        if (failNtfy) { res.writeHead(500); res.end("no"); return; }
+        hits.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        res.writeHead(200); res.end("ok");
+      });
+    });
+    const morning = new Date("2026-10-14T04:00:00Z");
+    const app = await boot({
+      base: root,
+      dataDir,
+      port: 0,
+      poll: false,
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "digest-topic", PORT: "0", UI_PASSWORD: "" },
+    });
+    try {
+      await assert.rejects(() => app.runDigest({ now: morning, slot: "06:00" }), /HTTP Error 500/);
+      assert.equal(existsSync(path.join(dataDir, "digest.json")), false);
+      failNtfy = false;
+      const sent = await app.runDigest({ now: morning, slot: "06:00" });
+      assert.equal(sent.sent, true);
+      assert.equal(sent.count, 4);
+      assert.equal(hits.length, 1);
+      assert.equal(hits[0].topic, "digest-topic");
+      assert.equal(hits[0].priority, 4);
+      assert.equal(hits[0].title, "⚠️ Storingen vandaag");
+      assert.ok(hits[0].message.includes("Staking"));
+      assert.ok(hits[0].message.includes("Jouw traject"));
+      assert.ok(hits[0].message.includes("Seinbeeld"));
+      assert.equal(hits[0].message.includes("Zwolle"), false);
+      assert.equal(hits[0].message.includes("Amsterdam Zuid"), false);
+      assert.ok(seen.every((u) => u === "https://gateway.apiportal.ns.nl/disruptions/v3"));
+      const saved = JSON.parse(readFileSync(path.join(dataDir, "digest.json"), "utf8"));
+      assert.ok(saved.slots.includes("2026-10-14 06:00"));
+      assert.ok(saved.events["strike-ut"]);
+      assert.equal(saved.events["works-asd"], undefined);
+      const again = await app.runDigest({ now: morning, slot: "06:00" });
+      assert.equal(again.sent, false);
+      assert.equal(again.reason, "ongewijzigd");
+      assert.equal(hits.length, 1);
+      const evening = await app.maybeDigest(new Date("2026-10-14T19:00:00Z"));
+      assert.equal(evening.length, 1);
+      assert.equal(evening[0].sent, true);
+      assert.equal(hits.length, 2);
+      assert.equal(hits[1].priority, 3);
+      assert.equal(hits[1].title, "🚧 Storingen morgen");
+      assert.ok(hits[1].message.includes("Werkzaamheden: Amsterdam Zuid"));
+      assert.equal(hits[1].message.includes("Calamiteit"), false);
+      assert.deepEqual(await app.maybeDigest(new Date("2026-10-14T19:05:00Z")), []);
+      assert.equal(hits.length, 2);
+      const st = await call(app, "/api/status", { auth: false });
+      assert.equal(st.body.last_digest.label, "morgen");
+      assert.equal(st.body.last_digest.sent, true);
+      const bad = await call(app, "/api/settings", { method: "POST", auth: false, body: JSON.stringify({ digest_times: "25:00" }) });
+      assert.equal(bad.status, 400);
+      assert.match(bad.body.error, /HH:MM/);
+      assert.deepEqual((await call(app, "/api/status", { auth: false })).body.digest_times, ["06:00", "21:00"]);
+      const savedSettings = await call(app, "/api/settings", {
+        method: "POST",
+        auth: false,
+        body: JSON.stringify({ digest_times: "7:30, 22:05", digest_enabled: false, digest_quiet: true }),
+      });
+      assert.equal(savedSettings.body.ok, true);
+      const after = await call(app, "/api/status", { auth: false });
+      assert.deepEqual(after.body.digest_times, ["07:30", "22:05"]);
+      assert.equal(after.body.digest_enabled, false);
+      assert.equal(after.body.digest_quiet, true);
+      assert.equal(after.body.threshold, 3);
+      assert.deepEqual(await app.maybeDigest(new Date("2026-10-15T05:30:00Z")), []);
+      assert.equal(hits.length, 2);
+      const forced = await call(app, "/api/digest", { method: "POST", auth: false });
+      assert.equal(forced.status, 200);
+      assert.equal(typeof forced.body.sent, "boolean");
+      assert.equal(typeof forced.body.count, "number");
+      assert.ok("reason" in forced.body);
     } finally {
       globalThis.fetch = realFetch;
       await app.close();

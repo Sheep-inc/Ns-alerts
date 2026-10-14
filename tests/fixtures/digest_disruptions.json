@@ -1,0 +1,138 @@
+[
+  {
+    "id": "strike-ut",
+    "type": "DISRUPTION",
+    "title": "Utrecht - Heerlen",
+    "isActive": true,
+    "impact": { "value": 3 },
+    "start": "2026-10-14T04:00:00+0200",
+    "end": "2026-10-14T22:00:00+0200",
+    "expectedDuration": { "description": "Tot woensdagavond door een staking." },
+    "publicationSections": [{
+      "section": { "stations": [{ "stationCode": "UT" }, { "stationCode": "HRL" }] },
+      "consequence": { "description": "geen treinen", "section": { "stations": [{ "stationCode": "UT" }] } }
+    }],
+    "timespans": [{
+      "start": "2026-10-14T04:00:00+0200",
+      "end": "2026-10-14T22:00:00+0200",
+      "situation": { "label": "Door een staking rijden er geen treinen." },
+      "cause": { "label": "staking" }
+    }]
+  },
+  {
+    "id": "works-asd",
+    "type": "MAINTENANCE",
+    "title": "Amsterdam Zuid",
+    "isActive": false,
+    "impact": { "value": 1 },
+    "start": "2026-10-15T01:00:00+0200",
+    "end": "2026-10-15T23:00:00+0200",
+    "publicationSections": [{
+      "section": { "stations": [{ "stationCode": "ASD" }] },
+      "consequence": { "description": "beperkt treinverkeer", "section": { "stations": [{ "stationCode": "ASD" }] } }
+    }],
+    "timespans": [{
+      "start": "2026-10-15T01:00:00+0200",
+      "end": "2026-10-15T23:00:00+0200",
+      "situation": { "label": "Werkzaamheden bij Amsterdam Zuid." },
+      "cause": { "label": "werkzaamheden" }
+    }]
+  },
+  {
+    "id": "local-ut",
+    "type": "DISRUPTION",
+    "title": "Seinbeeld Utrecht",
+    "isActive": true,
+    "impact": { "value": 1 },
+    "start": "2026-10-14T06:00:00+0200",
+    "end": "2026-10-14T12:00:00+0200",
+    "publicationSections": [{
+      "section": { "stations": [{ "stationCode": "UT" }] },
+      "consequence": { "description": "vertraging", "section": { "stations": [{ "stationCode": "UT" }] } }
+    }],
+    "timespans": [{
+      "start": "2026-10-14T06:00:00+0200",
+      "end": "2026-10-14T12:00:00+0200",
+      "situation": { "label": "Seinstoring." },
+      "cause": { "label": "seinbeeld" }
+    }]
+  },
+  {
+    "id": "elsewhere",
+    "type": "DISRUPTION",
+    "title": "Zwolle - Groningen",
+    "isActive": true,
+    "impact": { "value": 1 },
+    "start": "2026-10-14T05:00:00+0200",
+    "end": "2026-10-14T18:00:00+0200",
+    "publicationSections": [{
+      "section": { "stations": [{ "stationCode": "ZL" }, { "stationCode": "GN" }] }
+    }],
+    "timespans": [{
+      "start": "2026-10-14T05:00:00+0200",
+      "end": "2026-10-14T18:00:00+0200",
+      "situation": { "label": "Minder treinen." },
+      "cause": { "label": "materieel" }
+    }]
+  },
+  {
+    "id": "calamity-asd",
+    "type": "CALAMITY",
+    "title": "Groot alarm Amsterdam",
+    "isActive": true,
+    "impact": { "value": 1 },
+    "start": "2026-10-14T00:00:00+0200",
+    "end": "2026-10-16T23:00:00+0200",
+    "publicationSections": [{
+      "section": { "stations": [{ "stationCode": "ASD" }] },
+      "consequence": { "description": "geen treinen" }
+    }],
+    "timespans": [{
+      "start": "2026-10-14T00:00:00+0200",
+      "end": "2026-10-16T23:00:00+0200",
+      "situation": { "label": "Calamiteit rond Amsterdam." },
+      "cause": { "label": "calamiteit" }
+    }]
+  },
+  {
+    "id": "old-ut",
+    "type": "DISRUPTION",
+    "title": "Oude storing Utrecht",
+    "isActive": true,
+    "impact": { "value": 1 },
+    "start": "2026-09-01T08:00:00+0200",
+    "end": "2026-09-01T12:00:00+0200",
+    "publicationSections": [{
+      "section": { "stations": [{ "stationCode": "UT" }] }
+    }],
+    "timespans": [{
+      "start": "2026-09-01T08:00:00+0200",
+      "end": "2026-09-01T12:00:00+0200",
+      "cause": { "label": "seinbeeld" }
+    }]
+  },
+  {
+    "id": "wide",
+    "type": "DISRUPTION",
+    "title": "Veel stations",
+    "isActive": true,
+    "impact": { "value": 1 },
+    "start": "2026-10-14T00:00:00+0200",
+    "end": "2026-10-14T23:00:00+0200",
+    "publicationSections": [{
+      "section": {
+        "stations": [
+          { "stationCode": "S00" }, { "stationCode": "S01" }, { "stationCode": "S02" }, { "stationCode": "S03" },
+          { "stationCode": "S04" }, { "stationCode": "S05" }, { "stationCode": "S06" }, { "stationCode": "S07" },
+          { "stationCode": "S08" }, { "stationCode": "S09" }, { "stationCode": "S10" }, { "stationCode": "S11" }
+        ]
+      }
+    }],
+    "timespans": [{
+      "start": "2026-10-14T00:00:00+0200",
+      "end": "2026-10-14T23:00:00+0200",
+      "situation": { "label": "Verspreide verstoring." },
+      "cause": { "label": "materieel" }
+    }]
+  }
+]

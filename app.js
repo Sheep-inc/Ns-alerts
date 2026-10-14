@@ -9,6 +9,15 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as detect from "./detect.js";
+import {
+  amsterdamParts,
+  buildDigest,
+  digestTarget,
+  digestTargetFromNow,
+  dueSlots,
+  markSlot,
+  parseDigestTimes,
+} from "./digest.js";
 
 const BASE = path.dirname(fileURLToPath(import.meta.url));
 const NS = "https://gateway.apiportal.ns.nl";
@@ -132,6 +141,13 @@ function validDate(s) {
   return dt.getFullYear() === +m[1] && dt.getMonth() === +m[2] - 1 && dt.getDate() === +m[3];
 }
 
+function envFlag(v, fallback) {
+  const s = String(v).trim().toLowerCase();
+  if (["0", "false", "nee", "off", "no"].includes(s)) return false;
+  if (["1", "true", "ja", "on", "yes"].includes(s)) return true;
+  return fallback;
+}
+
 function pyInt(v) {
   if (typeof v === "boolean" || v == null) throw new Error(`invalid int ${v}`);
   if (typeof v === "number") {
@@ -170,7 +186,8 @@ export function createApp(opts = {}) {
   const subsFile = path.join(dataDir, "subscriptions.json");
   const cfgFile = path.join(dataDir, "config.json");
   const stateFile = path.join(dataDir, "state.json");
-  const status = { last_poll: null, error: null };
+  const digestFile = path.join(dataDir, "digest.json");
+  const status = { last_poll: null, error: null, last_digest: null };
   const cache = new Map();
   let stationsCache = null;
   let lastCall = 0;
@@ -209,6 +226,9 @@ export function createApp(opts = {}) {
       ["delay_grow", 5],
       ["window_min", 60],
       ["poll_sec", 120],
+      ["digest_enabled", true],
+      ["digest_times", ["06:00", "21:00"]],
+      ["digest_quiet", false],
     ];
     for (const [k, v] of defaults) {
       if (!Object.prototype.hasOwnProperty.call(c, k)) {
@@ -219,6 +239,12 @@ export function createApp(opts = {}) {
     if (changed) writeJson(cfgFile, c);
     if (env.NTFY_TOPIC) c.ntfy_topic = String(env.NTFY_TOPIC).trim();
     if (env.NTFY_SERVER) c.ntfy_server = String(env.NTFY_SERVER).trim();
+    if (env.DIGEST_TIMES) {
+      const parsed = parseDigestTimes(env.DIGEST_TIMES);
+      if (parsed) c.digest_times = parsed;
+    }
+    if (env.DIGEST_ENABLED != null && String(env.DIGEST_ENABLED).trim() !== "") c.digest_enabled = envFlag(env.DIGEST_ENABLED, c.digest_enabled);
+    if (env.DIGEST_QUIET != null && String(env.DIGEST_QUIET).trim() !== "") c.digest_quiet = envFlag(env.DIGEST_QUIET, c.digest_quiet);
     return c;
   }
 
@@ -375,11 +401,72 @@ export function createApp(opts = {}) {
     return run;
   }
 
+  function loadDigest() {
+    const d = readJson(digestFile, {});
+    return {
+      events: d.events && typeof d.events === "object" && !Array.isArray(d.events) ? d.events : {},
+      slots: Array.isArray(d.slots) ? d.slots : [],
+    };
+  }
+
+  async function runDigestInner({ now, slot, force } = {}) {
+    if (!apiKey()) throw new NoKey("NS_API_KEY missing");
+    const when = now || new Date();
+    const cfg = config();
+    const target = slot ? digestTarget(when, slot) : digestTargetFromNow(when);
+    const dis = await nsGet("/disruptions/v3", null, 60);
+    const list = Array.isArray(dis) ? dis : (dis?.payload || []);
+    let subs = readJson(subsFile, []);
+    if (!Array.isArray(subs)) subs = [];
+    const prev = loadDigest();
+    const built = buildDigest({
+      disruptions: list,
+      subs,
+      ymd: target.ymd,
+      weekday: target.weekday,
+      label: target.label,
+      previous: force ? { events: {} } : prev,
+      quiet: Boolean(cfg.digest_quiet),
+    });
+    if (built.sent) await ntfy(built.title, built.body, built.priority);
+    const slots = markSlot(prev.slots, when, slot);
+    writeJson(digestFile, { events: built.next.events, slots });
+    const p = amsterdamParts(when);
+    status.last_digest = { at: `${p.ymd} ${p.hhmm}`, sent: built.sent, count: built.count, label: target.label };
+    return { ok: true, sent: built.sent, count: built.count, reason: built.reason ?? null };
+  }
+
+  function runDigest(opts) {
+    const run = pollChain.then(() => runDigestInner(opts));
+    pollChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  async function maybeDigest(now) {
+    const cfg = config();
+    if (!cfg.digest_enabled || !apiKey()) return [];
+    const when = now || new Date();
+    const times = Array.isArray(cfg.digest_times) ? cfg.digest_times : ["06:00", "21:00"];
+    const due = dueSlots(when, times, loadDigest().slots);
+    const results = [];
+    for (const slot of due) {
+      try { results.push(await runDigest({ now: when, slot: slot.time, force: false })); }
+      catch (e) {
+        log("WARNING", `digest failed: ${errStr(e)}`);
+        status.error = errStr(e);
+        results.push({ ok: false, error: errStr(e) });
+      }
+    }
+    return results;
+  }
+
   function startPoller() {
     stopped = false;
     pollerPromise = (async () => {
       while (!stopped) {
         try { await pollOnce(); }
+        catch (e) { console.error(e); status.error = errStr(e); }
+        try { await maybeDigest(); }
         catch (e) { console.error(e); status.error = errStr(e); }
         if (stopped) break;
         await sleep((Number(config().poll_sec) || 120) * 1000);
@@ -456,6 +543,10 @@ export function createApp(opts = {}) {
         threshold: c.delay_threshold,
         last_poll: status.last_poll,
         error: status.error,
+        digest_enabled: Boolean(c.digest_enabled),
+        digest_times: c.digest_times,
+        digest_quiet: Boolean(c.digest_quiet),
+        last_digest: status.last_digest,
       });
     }
     if (u.pathname === "/api/stations") {
@@ -514,10 +605,29 @@ export function createApp(opts = {}) {
       } catch (e) { return send(res, 502, { error: errStr(e) }); }
       return send(res, 200, { ok: true });
     }
+    if (u.pathname === "/api/digest") {
+      try {
+        const out = await runDigest({ force: true });
+        return send(res, 200, out);
+      } catch (e) {
+        if (e instanceof NoKey) return send(res, 503, { error: "NS_API_KEY missing" });
+        return send(res, 502, { error: errStr(e) });
+      }
+    }
     if (u.pathname === "/api/settings") {
       const b = await readBody(req);
       const c = config();
-      if (Object.prototype.hasOwnProperty.call(b, "threshold")) c.delay_threshold = Math.max(1, pyInt(b.threshold));
+      let threshold;
+      if (Object.prototype.hasOwnProperty.call(b, "threshold")) threshold = Math.max(1, pyInt(b.threshold));
+      let times;
+      if (Object.prototype.hasOwnProperty.call(b, "digest_times")) {
+        times = parseDigestTimes(b.digest_times);
+        if (!times) return send(res, 400, { error: "tijden moeten HH:MM zijn, gescheiden door komma's" });
+      }
+      if (threshold != null) c.delay_threshold = threshold;
+      if (times) c.digest_times = times;
+      if (Object.prototype.hasOwnProperty.call(b, "digest_enabled")) c.digest_enabled = Boolean(b.digest_enabled);
+      if (Object.prototype.hasOwnProperty.call(b, "digest_quiet")) c.digest_quiet = Boolean(b.digest_quiet);
       writeJson(cfgFile, c);
       return send(res, 200, { ok: true });
     }
@@ -548,7 +658,7 @@ export function createApp(opts = {}) {
     log("INFO", `ntfy topic: ${c.ntfy_server}/${c.ntfy_topic}`);
     if (!apiKey()) log("WARNING", "NS_API_KEY missing — UI draait, poller staat stil tot de key er is (zet in .env en herstart)");
     await listen();
-    startPoller();
+    if (opts.poll !== false) startPoller();
     return api;
   }
 
@@ -570,6 +680,8 @@ export function createApp(opts = {}) {
     start,
     close,
     pollOnce,
+    runDigest,
+    maybeDigest,
     activeWindow,
     get port() { return port; },
     dataDir,

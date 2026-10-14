@@ -1,1 +1,1 @@
-{"ntfy_server": "https://ntfy.sh", "ntfy_topic": "ns-alerts-VERVANG-DOOR-IETS-ONRADEN", "delay_threshold": 3, "delay_grow": 5, "window_min": 60, "poll_sec": 120}
+{"ntfy_server": "https://ntfy.sh", "ntfy_topic": "ns-alerts-VERVANG-DOOR-IETS-ONRADEN", "delay_threshold": 3, "delay_grow": 5, "window_min": 60, "poll_sec": 120, "digest_enabled": true, "digest_times": ["06:00", "21:00"], "digest_quiet": false}
