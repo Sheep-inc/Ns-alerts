@@ -1,0 +1,14 @@
+{
+  "name": "ns-alerts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NS treinalerts via ntfy",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node app.js",
+    "test": "node --test"
+  }
+}

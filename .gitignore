@@ -2,5 +2,6 @@
 data/*
 !data/.gitkeep
 *.log
-__pycache__/
-*.pyc
+node_modules/
+seed/*.json
+!seed/subscriptions.example.json

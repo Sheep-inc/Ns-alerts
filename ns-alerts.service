@@ -1,4 +1,5 @@
-# Kopieer naar /etc/systemd/system/ns-alerts.service en pas paden/gebruiker aan
+# Kopieer naar /etc/systemd/system/ns-alerts.service en pas paden/gebruiker aan.
+# Vereist Node.js 20 of nieuwer (/usr/bin/node).
 [Unit]
 Description=NS treinalerts
 After=network-online.target
@@ -9,7 +10,7 @@ User=nsalerts
 WorkingDirectory=/opt/ns-alerts
 EnvironmentFile=/opt/ns-alerts/.env
 Environment=TZ=Europe/Amsterdam
-ExecStart=/usr/bin/python3 /opt/ns-alerts/app.py
+ExecStart=/usr/bin/node /opt/ns-alerts/app.js
 Restart=always
 RestartSec=10
 

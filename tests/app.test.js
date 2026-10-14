@@ -1,0 +1,246 @@
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { after, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
+import { DAYS, activeWindow, createApp, decodeNsBody } from "../app.js";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const open = [];
+after(async () => { await Promise.all(open.splice(0).map((a) => a.close())); });
+
+function tmp() { return mkdtempSync(path.join(tmpdir(), "ns-alerts-")); }
+
+async function boot(opts) {
+  const app = createApp(opts);
+  open.push(app);
+  await app.start();
+  return app;
+}
+
+function authHeader(pw) {
+  return { Authorization: `Basic ${Buffer.from(`x:${pw}`).toString("base64")}` };
+}
+
+function listen(handler) {
+  return new Promise((resolve) => {
+    const srv = http.createServer(handler);
+    srv.listen(0, "127.0.0.1", () => resolve({ srv, url: `http://127.0.0.1:${srv.address().port}` }));
+  });
+}
+
+async function call(app, urlPath, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (opts.auth !== false) Object.assign(headers, authHeader(opts.password ?? "geheim"));
+  const res = await fetch(`http://127.0.0.1:${app.port}${urlPath}`, { method: opts.method || "GET", headers, body: opts.body });
+  const text = await res.text();
+  let body = text;
+  try { body = text ? JSON.parse(text) : null; } catch { /* html */ }
+  return { status: res.status, body, text, headers: res.headers };
+}
+
+describe("ns-alerts http", { concurrency: 1 }, () => {
+  test("active window follows weekday and the 60/5 minute bounds", () => {
+    const sub = { time: "08:12", days: DAYS.slice(0, 5) };
+    const thu = (h, m, s = 0) => new Date(2026, 9, 15, h, m, s);
+    assert.ok(activeWindow(sub, thu(8, 0), 60));
+    assert.ok(activeWindow(sub, thu(7, 12), 60));
+    assert.equal(activeWindow(sub, thu(7, 11, 59), 60), null);
+    assert.ok(activeWindow(sub, thu(8, 17), 60));
+    assert.equal(activeWindow(sub, thu(8, 17, 1), 60), null);
+    assert.equal(activeWindow(sub, new Date(2026, 9, 17, 8, 0), 60), null);
+    assert.ok(activeWindow({ time: "08:12" }, new Date(2026, 9, 17, 8, 0), 60));
+  });
+
+  test("decodeNsBody gunzips disruptions payloads and parses plain JSON", () => {
+    const obj = [{ id: "1", title: "x" }];
+    assert.deepEqual(decodeNsBody(Buffer.from(JSON.stringify(obj))), obj);
+    assert.deepEqual(decodeNsBody(zlib.gzipSync(Buffer.from(JSON.stringify(obj)))), obj);
+  });
+
+  test("seed copies subscriptions only when the data file is absent", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    const seedDir = path.join(base, "seed");
+    const seedFile = path.join(seedDir, "subscriptions.json");
+    mkdirSync(seedDir, { recursive: true });
+    const payload = [{ from: "UT", fromName: "Utrecht Centraal", time: "08:12", to: "ASD", days: ["ma"], id: "a1b2c3d4" }];
+    writeFileSync(seedFile, JSON.stringify(payload));
+    const app = await boot({ base, dataDir, env: { UI_PASSWORD: "", PORT: "0" }, port: 0 });
+    try {
+      assert.deepEqual(JSON.parse(readFileSync(app.subsFile, "utf8")), payload);
+      writeFileSync(seedFile, "[]");
+      const again = await boot({ base, dataDir, env: { UI_PASSWORD: "", PORT: "0", SEED_FILE: seedFile }, port: 0 });
+      assert.deepEqual(JSON.parse(readFileSync(again.subsFile, "utf8")), payload);
+      await again.close();
+    } finally { await app.close(); rmSync(base, { recursive: true, force: true }); }
+  });
+
+  test("missing seed leaves subscriptions empty", async () => {
+    const base = tmp();
+    const app = await boot({ base, dataDir: path.join(base, "data"), env: { PORT: "0" }, port: 0 });
+    try {
+      assert.equal(existsSync(app.subsFile), false);
+      const r = await call(app, "/api/subs", { auth: false });
+      assert.deepEqual(r.body, []);
+    } finally { await app.close(); rmSync(base, { recursive: true, force: true }); }
+  });
+
+  test("http api, auth, import and settings", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    const ntfyHits = [];
+    const ntfy = await listen((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        ntfyHits.push(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+        res.writeHead(200); res.end("ok");
+      });
+    });
+    const app = await boot({
+      base: root,
+      dataDir,
+      port: 0,
+      env: { UI_PASSWORD: "geheim", NTFY_TOPIC: "topic-vast", NTFY_SERVER: ntfy.url, PORT: "0" },
+    });
+    try {
+      assert.equal((await call(app, "/healthz", { auth: false })).body.ok, true);
+      assert.equal((await call(app, "/", { auth: false })).status, 401);
+      const page = await call(app, "/");
+      assert.equal(page.status, 200);
+      assert.ok(page.text.includes("NS treinalerts"));
+      assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
+
+      const st = await call(app, "/api/status");
+      assert.equal(st.body.key, false);
+      assert.equal(st.body.topic, "topic-vast");
+      assert.equal(st.body.server, ntfy.url);
+      assert.equal(st.body.threshold, 3);
+      assert.equal((await call(app, "/api/status", { password: "fout" })).status, 401);
+      assert.equal((await call(app, "/api/stations?q=ut")).status, 503);
+
+      const bad = await call(app, "/api/subs", { method: "POST", body: "{}" });
+      assert.equal(bad.status, 400);
+      assert.equal(bad.body.error, "van, naar/treinnummer en tijd verplicht");
+
+      const created = await call(app, "/api/subs", {
+        method: "POST",
+        body: JSON.stringify({ from: "ut", fromName: "Utrecht Centraal", to: "asd", toName: "Amsterdam Centraal", time: "08:12", label: "Naar werk", days: ["ma", "di"] }),
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.from, "UT");
+      assert.equal(created.body.to, "ASD");
+      assert.match(created.body.id, /^[0-9a-f]{8}$/);
+      const listed = await call(app, "/api/subs");
+      assert.equal(listed.body.length, 1);
+      assert.deepEqual(JSON.parse(readFileSync(path.join(dataDir, "subscriptions.json"), "utf8")), listed.body);
+
+      assert.equal((await call(app, `/api/subs/${created.body.id}`, { method: "DELETE" })).body.ok, true);
+      assert.deepEqual((await call(app, "/api/export")).body, []);
+
+      const example = JSON.parse(readFileSync(path.join(root, "subs.example.json"), "utf8"));
+      const imported = await call(app, "/api/import", { method: "POST", body: JSON.stringify(example) });
+      assert.equal(imported.body.count, 2);
+      const exp = await call(app, "/api/export");
+      assert.equal(exp.body[0].from, "UT");
+      assert.ok(exp.body[0].id);
+      assert.deepEqual(exp.body[1].days, ["ma", "wo"]);
+      assert.equal((await call(app, "/api/import", { method: "POST", body: "{}" })).status, 400);
+
+      assert.equal((await call(app, "/api/settings", { method: "POST", body: JSON.stringify({ threshold: "4" }) })).body.ok, true);
+      assert.equal((await call(app, "/api/status")).body.threshold, 4);
+      assert.equal((await call(app, "/api/settings", { method: "POST", body: JSON.stringify({ threshold: 0 }) })).status, 200);
+      assert.equal((await call(app, "/api/status")).body.threshold, 1);
+
+      const sent = await call(app, "/api/test", { method: "POST" });
+      assert.equal(sent.status, 200);
+      assert.equal(ntfyHits[0].topic, "topic-vast");
+      assert.equal(ntfyHits[0].title, "🚆 Test melding");
+      assert.equal(ntfyHits[0].priority, 3);
+
+      const down = await boot({
+        base: root,
+        dataDir: path.join(base, "other"),
+        port: 0,
+        env: { NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "x", PORT: "0" },
+      });
+      assert.equal((await call(down, "/api/test", { method: "POST", auth: false })).status, 502);
+      await down.close();
+    } finally {
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("poller uses trips, gzip disruptions and departures", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    const seen = [];
+    const realFetch = globalThis.fetch;
+    const trips = JSON.parse(readFileSync(path.join(root, "tests/fixtures/trips.json"), "utf8"));
+    const departures = JSON.parse(readFileSync(path.join(root, "tests/fixtures/departures.json"), "utf8"));
+    const disruptions = JSON.parse(readFileSync(path.join(root, "tests/fixtures/disruptions.json"), "utf8"));
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(disruptions)));
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (u.startsWith("https://gateway.apiportal.ns.nl")) {
+        seen.push({ url: u, key: opts.headers?.["Ocp-Apim-Subscription-Key"] });
+        const json = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "content-type": "application/json" } });
+        if (u.includes("/api/v3/trips")) return json(trips);
+        if (u.includes("/api/v2/departures")) return json(departures);
+        if (u.includes("/disruptions/v3")) return new Response(gz, { status: 200, headers: { "content-type": "application/json" } });
+        if (u.includes("/api/v2/stations")) {
+          return json({ payload: [{ code: "UT", namen: { lang: "Utrecht Centraal" }, land: "NL" }, { code: "ASD", namen: { lang: "Amsterdam Centraal" }, land: "NL" }] });
+        }
+        return new Response("missing", { status: 500 });
+      }
+      return realFetch(url, opts);
+    };
+    const ntfyHits = [];
+    const ntfy = await listen((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => { ntfyHits.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); res.writeHead(200); res.end(); });
+    });
+    const subs = [
+      { id: "route0001", from: "UT", fromName: "Utrecht", to: "ASD", toName: "Amsterdam", time: "08:12", days: ["do"], train: null },
+      { id: "train0001", from: "UT", fromName: "Utrecht", to: "", time: "08:12", train: "3014", days: ["do"] },
+    ];
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, "subscriptions.json"), JSON.stringify(subs));
+    const app = await boot({
+      base: root,
+      dataDir,
+      port: 0,
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "poll-topic", PORT: "0", UI_PASSWORD: "" },
+    });
+    try {
+      await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
+      const titles = ntfyHits.map((h) => h.title);
+      assert.ok(titles.some((t) => t.includes("Utrecht → Amsterdam")));
+      assert.ok(ntfyHits.some((h) => h.message.includes("+7 min vertraging") && h.priority === 4));
+      assert.ok(ntfyHits.some((h) => h.message.includes("geannuleerd") && h.priority === 5));
+      assert.ok(seen.some((s) => s.url.includes("/api/v3/trips") && s.url.includes("fromStation=UT") && s.url.includes("toStation=ASD") && s.url.includes("previousAdvices=1") && s.url.includes("nextAdvices=2") && s.url.includes("dateTime=") && s.key === "test-key"));
+      assert.ok(seen.some((s) => s.url.includes("/api/v2/departures") && s.url.includes("station=UT") && s.url.includes("maxJourneys=40")));
+      assert.ok(seen.some((s) => s.url.includes("/disruptions/v3") && s.url.includes("isActive=true")));
+      const found = await call(app, "/api/stations?q=utrecht", { auth: false });
+      assert.equal(found.status, 200);
+      assert.equal(found.body[0].code, "UT");
+      assert.equal(found.body[0].name, "Utrecht Centraal");
+      const state = JSON.parse(readFileSync(path.join(dataDir, "state.json"), "utf8"));
+      assert.ok(state["route0001@2026-10-15"]);
+      assert.equal(state["route0001@2026-10-15"].delay, 7);
+      assert.ok(state["train0001@2026-10-15"].cancelled);
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
