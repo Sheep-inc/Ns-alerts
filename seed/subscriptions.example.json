@@ -1,0 +1,24 @@
+[
+  {
+    "from": "UT",
+    "fromName": "Utrecht Centraal",
+    "to": "ASD",
+    "toName": "Amsterdam Centraal",
+    "time": "08:12",
+    "label": "Naar werk",
+    "train": null,
+    "days": ["ma", "di", "wo", "do", "vr"],
+    "id": "a1b2c3d4"
+  },
+  {
+    "from": "UT",
+    "fromName": "Utrecht Centraal",
+    "to": "",
+    "toName": null,
+    "time": "08:12",
+    "label": "IC 3014",
+    "train": "3014",
+    "days": ["ma", "wo"],
+    "id": "e5f60718"
+  }
+]

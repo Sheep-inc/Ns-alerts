@@ -1,0 +1,2 @@
+{"payload":{"source":"PPV","departures":[
+{"direction":"Amsterdam Centraal","name":"NS  3014","plannedDateTime":"2026-10-15T08:12:00+0200","actualDateTime":"2026-10-15T08:12:00+0200","plannedTrack":"5","product":{"number":"3014","categoryCode":"IC"},"trainCategory":"IC","cancelled":true,"messages":[{"message":"Rijdt niet","style":"WARNING"}],"departureStatus":"CANCELLED"}]}}

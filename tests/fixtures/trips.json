@@ -1,0 +1,4 @@
+{"trips":[
+{"status":"NORMAL","legs":[{"cancelled":false,"product":{"number":"3012"},"origin":{"name":"Utrecht Centraal","stationCode":"UT","plannedDateTime":"2026-10-15T07:42:00+0200","plannedTrack":"5"},"destination":{"stationCode":"ASD","plannedDateTime":"2026-10-15T08:09:00+0200"}}]},
+{"status":"NORMAL","messages":[],"legs":[{"cancelled":false,"alternativeTransport":false,"product":{"number":"3014"},"origin":{"name":"Utrecht Centraal","stationCode":"UT","plannedDateTime":"2026-10-15T08:12:00+0200","actualDateTime":"2026-10-15T08:19:00+0200","plannedTrack":"5","actualTrack":"18"},"destination":{"stationCode":"ASD","plannedDateTime":"2026-10-15T08:39:00+0200"},"messages":[{"text":"Later vertrek door een defecte trein"}]}]}
+]}

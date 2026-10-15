@@ -1,0 +1,24 @@
+<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NS treinalerts</title><link rel="stylesheet" href="/app.css"></head><body><header>🚆 NS treinalerts</header><main>
+<div class="card" id="st">Laden…</div>
+<div class="card"><b>Mijn abonnementen</b><div id="subs"></div></div>
+<div class="card"><b>Nieuw abonnement</b>
+<label>Van (station)</label><input id="from" autocomplete="off" placeholder="bv. Utrecht Centraal of UT"><div class="sug" id="sfrom"></div>
+<label>Naar (station)</label><input id="to" autocomplete="off" placeholder="bv. Amsterdam Centraal of ASD"><div class="sug" id="sto"></div>
+<label>Vertrektijd</label><input id="time" type="time">
+<label>Treinnummer (optioneel, i.p.v. bestemming)</label><input id="train" inputmode="numeric">
+<label>Omschrijving (optioneel)</label><input id="label" placeholder="bv. Naar werk">
+<div class="days"><label><input id="once" type="checkbox"> Eenmalig</label></div>
+<label id="dateLbl" hidden>Datum</label><input id="date" type="date" hidden>
+<label id="daysLbl">Dagen</label><div class="days" id="days"></div>
+<button id="addBtn" type="button">Toevoegen</button></div>
+<div class="card"><button id="testBtn" type="button">Test melding</button> <span id="tr"></span>
+<label>Vertragingsdrempel (min)</label><input id="thr" type="number" min="1">
+<label>Minuten vóór vertrek</label><input id="win" type="number" min="1"><button id="saveThrBtn" type="button">Opslaan</button></div>
+<div class="card"><b>Dagelijkse check</b>
+<div class="days"><label><input id="digestOn" type="checkbox" checked> Aan</label></div>
+<label>Tijden (Europe/Amsterdam)</label><input id="digestTimes" placeholder="06:00, 21:00">
+<div class="days"><label><input id="digestQuiet" type="checkbox"> Melding als alles rustig is</label></div>
+<button id="saveDigestBtn" type="button">Opslaan</button> <button id="checkBtn" type="button">Nu checken</button> <span id="dr"></span>
+<br><small>Ochtend (vóór 12:00) gaat over vandaag, avond over morgen.</small></div>
+</main><script src="/app.js"></script></body></html>

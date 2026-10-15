@@ -1,0 +1,30 @@
+[
+  {
+    "id": "amf-ed",
+    "type": "DISRUPTION",
+    "title": "Amersfoort - Ede-Wageningen.",
+    "isActive": true,
+    "expectedDuration": {
+      "description": "Tot ongeveer 18:00 uur.",
+      "endTime": "2026-10-15T18:00:00+0200"
+    },
+    "publicationSections": [
+      {
+        "section": {
+          "stations": [
+            { "stationCode": "AMF" },
+            { "stationCode": "ED" }
+          ]
+        }
+      }
+    ],
+    "timespans": [
+      {
+        "cause": { "label": "seinstoring" },
+        "situation": { "label": "Er rijden minder treinen." },
+        "advices": ["Reis via Utrecht of kies een later tijdstip."],
+        "end": "2026-10-15T18:00:00+0200"
+      }
+    ]
+  }
+]
