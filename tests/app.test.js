@@ -15,7 +15,7 @@ after(async () => { await Promise.all(open.splice(0).map((a) => a.close())); });
 function tmp() { return mkdtempSync(path.join(tmpdir(), "ns-alerts-")); }
 
 async function boot(opts) {
-  const app = createApp(opts);
+  const app = createApp({ poll: false, ...opts });
   open.push(app);
   await app.start();
   return app;
@@ -333,8 +333,10 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
       const titles = ntfyHits.map((h) => h.title);
       assert.ok(titles.some((t) => t.includes("Utrecht → Amsterdam")));
-      assert.ok(ntfyHits.some((h) => h.message.includes("+7 min vertraging") && h.priority === 4));
-      assert.ok(ntfyHits.some((h) => h.message.includes("geannuleerd") && h.priority === 5));
+      assert.ok(ntfyHits.some((h) => h.message.includes("(+7 min)") && h.priority === 4 && h.tags.includes("warning")));
+      assert.ok(ntfyHits.some((h) => h.message.includes("Rijdt niet meer") && h.priority === 5 && h.tags.includes("rotating_light")));
+      assert.ok(ntfyHits.every((h) => h.click.includes("ns.nl") && h.tags.includes("train")));
+      assert.equal(seen.filter((s) => s.url.includes("/api/v3/trips")).length, 1);
       assert.ok(seen.some((s) => s.url.includes("/api/v3/trips") && s.url.includes("fromStation=UT") && s.url.includes("toStation=ASD") && s.url.includes("previousAdvices=1") && s.url.includes("nextAdvices=2") && s.url.includes("dateTime=") && s.key === "test-key"));
       assert.ok(seen.some((s) => s.url.includes("/api/v2/departures") && s.url.includes("station=UT") && s.url.includes("maxJourneys=40")));
       assert.ok(seen.some((s) => s.url.includes("/disruptions/v3") && s.url.includes("isActive=true")));
