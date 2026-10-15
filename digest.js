@@ -65,17 +65,45 @@ function dayBounds(ymd) {
   return [start, end];
 }
 
+function takeDigits(str, i, n) {
+  const slice = str.slice(i, i + n);
+  if (slice.length !== n || !/^\d+$/.test(slice)) return null;
+  return Number(slice);
+}
+
 function parseInstant(s) {
   if (s == null || s === "") return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|([+-])(\d{2}):?(\d{2}))?$/.exec(String(s).trim());
-  if (!m) return null;
-  const sec = m[6] ? +m[6] : 0;
-  if (!m[7]) return zonedToUtc(+m[1], +m[2], +m[3], +m[4], +m[5], sec).getTime();
-  let ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], sec);
-  if (m[7] !== "Z") {
-    const sign = m[8] === "-" ? -1 : 1;
-    ms -= sign * ((+m[9]) * 60 + (+m[10])) * 60000;
+  const str = String(s).trim();
+  if (str.length < 16 || str[4] !== "-" || str[7] !== "-" || str[10] !== "T" || str[13] !== ":") return null;
+  const y = takeDigits(str, 0, 4);
+  const mo = takeDigits(str, 5, 2);
+  const d = takeDigits(str, 8, 2);
+  const h = takeDigits(str, 11, 2);
+  const mi = takeDigits(str, 14, 2);
+  if ([y, mo, d, h, mi].some((n) => n == null)) return null;
+  let i = 16;
+  let sec = 0;
+  if (str[i] === ":") {
+    const got = takeDigits(str, i + 1, 2);
+    if (got == null) return null;
+    sec = got;
+    i += 3;
   }
+  if (str[i] === ".") {
+    i += 1;
+    const frac = i;
+    while (i < str.length && str[i] >= "0" && str[i] <= "9") i += 1;
+    if (i === frac) return null;
+  }
+  if (i >= str.length) return zonedToUtc(y, mo, d, h, mi, sec).getTime();
+  const rest = str.slice(i);
+  let ms = Date.UTC(y, mo - 1, d, h, mi, sec);
+  if (rest === "Z") return ms;
+  if (!/^[+-]\d{2}:?\d{2}$/.test(rest)) return null;
+  const sign = rest[0] === "-" ? -1 : 1;
+  const hh = Number(rest.slice(1, 3));
+  const mm = Number(rest.slice(rest.length - 2));
+  ms -= sign * (hh * 60 + mm) * 60000;
   return ms;
 }
 

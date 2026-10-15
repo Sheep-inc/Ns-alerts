@@ -116,7 +116,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       base: root,
       dataDir,
       port: 0,
-      env: { UI_PASSWORD: "geheim", NTFY_TOPIC: "topic-vast", NTFY_SERVER: ntfy.url, PORT: "0" },
+      env: { UI_PASSWORD: "geheim", NTFY_TOPIC: "topic-vast", NTFY_SERVER: ntfy.url, NTFY_ALLOW_PRIVATE: "1", PORT: "0" },
     });
     try {
       assert.equal((await call(app, "/healthz", { auth: false })).body.ok, true);
@@ -213,7 +213,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
         base: root,
         dataDir: path.join(base, "other"),
         port: 0,
-        env: { NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "x", PORT: "0" },
+        env: { NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "x", NTFY_ALLOW_PRIVATE: "1", PORT: "0" },
       });
       assert.equal((await call(down, "/api/test", { method: "POST", auth: false })).status, 502);
       await down.close();
@@ -274,7 +274,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       base: root,
       dataDir,
       port: 0,
-      env: { NS_API_KEY: "test-key", NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "t", PORT: "0", DIGEST_ENABLED: "0" },
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: "http://127.0.0.1:9", NTFY_TOPIC: "t", NTFY_ALLOW_PRIVATE: "1", PORT: "0", DIGEST_ENABLED: "0" },
     });
     try {
       await app.pollOnce(new Date(2026, 9, 15, 8, 14, 0));
@@ -327,7 +327,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       base: root,
       dataDir,
       port: 0,
-      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "poll-topic", PORT: "0", UI_PASSWORD: "", DIGEST_ENABLED: "0" },
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "poll-topic", NTFY_ALLOW_PRIVATE: "1", PORT: "0", UI_PASSWORD: "", DIGEST_ENABLED: "0" },
     });
     try {
       await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
@@ -392,7 +392,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       dataDir,
       port: 0,
       poll: false,
-      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "digest-topic", PORT: "0", UI_PASSWORD: "" },
+      env: { NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "digest-topic", NTFY_ALLOW_PRIVATE: "1", PORT: "0", UI_PASSWORD: "" },
     });
     try {
       await assert.rejects(() => app.runDigest({ now: morning, slot: "06:00" }), /HTTP Error 500/);

@@ -1,14 +1,5 @@
 <!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NS treinalerts</title><style>
-body{font-family:system-ui,sans-serif;margin:0;background:#f4f4f4;color:#222}header{background:#ffc917;padding:14px 16px;font-weight:700;font-size:1.2em;color:#003082}
-main{padding:12px;max-width:560px;margin:auto}.card{background:#fff;border-radius:10px;padding:14px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
-label{display:block;margin:8px 0 3px;font-size:.9em}input{width:100%;box-sizing:border-box;padding:11px;font-size:1em;border:1px solid #ccc;border-radius:8px}
-button{background:#003082;color:#fff;border:0;border-radius:8px;padding:12px 14px;font-size:1em;margin-top:10px}.days label{display:inline-block;margin-right:8px}
-.days input{width:auto}.sug{border:1px solid #ddd;border-radius:8px;background:#fff}.sug div{padding:9px;border-bottom:1px solid #eee}.warn{color:#b00;font-weight:600}
-.sub{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:8px 0}.sub.once{background:#fff8e6;border-radius:8px;padding:8px;margin:6px 0}
-.sub button{background:#c00;margin:0;padding:8px 10px}small{color:#666}
-.badge{display:inline-block;background:#003082;color:#fff;border-radius:6px;padding:0 6px;font-size:.75em}
-</style></head><body><header>🚆 NS treinalerts</header><main>
+<title>NS treinalerts</title><link rel="stylesheet" href="/app.css"></head><body><header>🚆 NS treinalerts</header><main>
 <div class="card" id="st">Laden…</div>
 <div class="card"><b>Mijn abonnementen</b><div id="subs"></div></div>
 <div class="card"><b>Nieuw abonnement</b>
@@ -20,49 +11,14 @@ button{background:#003082;color:#fff;border:0;border-radius:8px;padding:12px 14p
 <div class="days"><label><input id="once" type="checkbox"> Eenmalig</label></div>
 <label id="dateLbl" hidden>Datum</label><input id="date" type="date" hidden>
 <label id="daysLbl">Dagen</label><div class="days" id="days"></div>
-<button onclick="add()">Toevoegen</button></div>
-<div class="card"><button onclick="test()">Test melding</button> <span id="tr"></span>
+<button id="addBtn" type="button">Toevoegen</button></div>
+<div class="card"><button id="testBtn" type="button">Test melding</button> <span id="tr"></span>
 <label>Vertragingsdrempel (min)</label><input id="thr" type="number" min="1">
-<label>Minuten vóór vertrek</label><input id="win" type="number" min="1"><button onclick="saveThr()">Opslaan</button></div>
+<label>Minuten vóór vertrek</label><input id="win" type="number" min="1"><button id="saveThrBtn" type="button">Opslaan</button></div>
 <div class="card"><b>Dagelijkse check</b>
 <div class="days"><label><input id="digestOn" type="checkbox" checked> Aan</label></div>
 <label>Tijden (Europe/Amsterdam)</label><input id="digestTimes" placeholder="06:00, 21:00">
 <div class="days"><label><input id="digestQuiet" type="checkbox"> Melding als alles rustig is</label></div>
-<button onclick="saveDigest()">Opslaan</button> <button onclick="checkNow()">Nu checken</button> <span id="dr"></span>
+<button id="saveDigestBtn" type="button">Opslaan</button> <button id="checkBtn" type="button">Nu checken</button> <span id="dr"></span>
 <br><small>Ochtend (vóór 12:00) gaat over vandaag, avond over morgen.</small></div>
-</main><script>
-const D=["ma","di","wo","do","vr","za","zo"],sel={from:null,to:null},$=i=>document.getElementById(i);
-const pad=n=>String(n).padStart(2,"0");
-const todayStr=()=>{const d=new Date();return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())};
-$("date").value=todayStr();
-$("once").onchange=()=>{const on=$("once").checked;$("date").hidden=$("dateLbl").hidden=!on;$("days").hidden=$("daysLbl").hidden=on;};
-$("days").innerHTML=D.map((d,i)=>`<label><input type=checkbox value=${d} ${i<5?"checked":""}> ${d}</label>`).join("");
-async function j(u,o){const r=await fetch(u,o);return r.json()}
-let digestRev=0;
-const touchDigest=()=>{digestRev++};
-$("digestOn").onchange=touchDigest;$("digestQuiet").onchange=touchDigest;$("digestTimes").oninput=touchDigest;
-async function load(){const s=await j("/api/status");if(document.activeElement!==$("thr"))$("thr").value=s.threshold;if(document.activeElement!==$("win"))$("win").value=s.window_min;
-if(!digestRev){$("digestOn").checked=s.digest_enabled!==false;$("digestTimes").value=(s.digest_times||["06:00","21:00"]).join(", ");$("digestQuiet").checked=!!s.digest_quiet;}
-$("st").innerHTML=(s.key?"✅ NS API-key aanwezig":"<span class=warn>⚠️ NS_API_KEY missing — zet de key in .env en herstart</span>")+
-`<br><small>ntfy-topic: <b>${s.topic}</b> (${s.server})<br>Laatste poll: ${s.last_poll||"-"} ${s.error?"<span class=warn>"+s.error+"</span>":""}</small>`;
-const subs=await j("/api/subs");$("subs").innerHTML=subs.length?subs.map(x=>`<div class="sub${x.date?" once":""}"><div><b>${x.time}</b> ${x.fromName||x.from} → ${x.toName||x.to||""} ${x.train?"(trein "+x.train+")":""}<br><small>${x.label||""} ${x.date?`<span class=badge>eenmalig</span> ${x.date}`:(x.days||[]).join(" ")}</small></div><button onclick="del('${x.id}')">✕</button></div>`).join(""):"<small>Nog geen abonnementen</small>"}
-function search(f){let t;$(f).oninput=()=>{sel[f]=null;clearTimeout(t);t=setTimeout(async()=>{const q=$(f).value;if(q.length<2){$("s"+f).innerHTML="";return}
-const r=await fetch("/api/stations?q="+encodeURIComponent(q));const d=await r.json();
-$("s"+f).innerHTML=r.ok?d.map(s=>`<div onclick="pick('${f}','${s.code}','${(s.name||"").replace(/'/g,"")}')">${s.name} <small>${s.code}</small></div>`).join(""):`<div><small>Zoeken niet mogelijk (${d.error}); typ de stationscode, bv. UT</small></div>`},300)}}
-function pick(f,c,n){sel[f]={c,n};$(f).value=n+" ("+c+")";$("s"+f).innerHTML=""}
-search("from");search("to");
-const code=f=>sel[f]?sel[f].c:$(f).value.trim().toUpperCase();
-async function add(){const b={from:code("from"),fromName:sel.from?.n,to:$("to").value?code("to"):"",toName:sel.to?.n,time:$("time").value,train:$("train").value.trim(),label:$("label").value};
-if($("once").checked)b.date=$("date").value||todayStr();else b.days=[...document.querySelectorAll("#days input:checked")].map(e=>e.value);
-const r=await fetch("/api/subs",{method:"POST",body:JSON.stringify(b)});if(!r.ok)alert((await r.json()).error);load()}
-async function del(i){if(confirm("Verwijderen?")){await fetch("/api/subs/"+i,{method:"DELETE"});load()}}
-async function test(){const r=await fetch("/api/test",{method:"POST"});$("tr").textContent=r.ok?"✅ verstuurd":"❌ mislukt"}
-async function saveThr(){await fetch("/api/settings",{method:"POST",body:JSON.stringify({threshold:$("thr").value,window_min:$("win").value})});load()}
-async function saveDigest(){const rev=digestRev;const r=await fetch("/api/settings",{method:"POST",body:JSON.stringify({digest_enabled:$("digestOn").checked,digest_times:$("digestTimes").value,digest_quiet:$("digestQuiet").checked})});
-if(!r.ok){$("dr").textContent="❌ "+(await r.json()).error;return;}if(digestRev===rev)digestRev=0;$("dr").textContent="✅ opgeslagen";load()}
-async function checkNow(){const r=await fetch("/api/digest",{method:"POST"});const d=await r.json();
-if(!r.ok)$("dr").textContent="❌ "+(d.error||"mislukt");
-else if(d.sent)$("dr").textContent="✅ verstuurd";
-else $("dr").textContent=d.reason==="ongewijzigd"?"geen wijziging":"niets relevants";}
-load();setInterval(load,30000);
-</script></body></html>
+</main><script src="/app.js"></script></body></html>

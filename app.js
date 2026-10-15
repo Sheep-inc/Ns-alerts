@@ -9,6 +9,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as detect from "./detect.js";
+import { MAX_BODY, clientIp, isAllowedNotifyUrl, isCrossSite, makeLimiter, maskSecret, securityHeaders } from "./security.js";
 import {
   amsterdamParts,
   buildDigest,
@@ -193,6 +194,7 @@ export function createApp(opts = {}) {
   let lastCall = 0;
   let nsChain = Promise.resolve();
   let pollChain = Promise.resolve();
+  const authFails = makeLimiter({ limit: 20, windowMs: 15 * 60 * 1000 });
   const sleepers = new Set();
   let stopped = false;
   let pollerPromise = null;
@@ -302,14 +304,19 @@ export function createApp(opts = {}) {
 
   async function ntfy(title, body, prio = "default") {
     const c = config();
+    const server = String(c.ntfy_server || "").replace(/\/+$/, "");
+    const allowPrivate = ["1", "true", "ja", "on", "yes"].includes(String(env.NTFY_ALLOW_PRIVATE || "").trim().toLowerCase());
+    if (!(await isAllowedNotifyUrl(`${server}/`, { allowPrivate }))) throw new Error("ntfy-server niet toegestaan");
     const priority = { min: 1, low: 2, default: 3, high: 4, urgent: 5 }[prio] ?? 3;
     const payload = JSON.stringify({ topic: c.ntfy_topic, title, message: body, priority });
-    const r = await fetch(`${c.ntfy_server.replace(/\/+$/, "")}/`, {
+    const r = await fetch(`${server}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: payload,
+      redirect: "manual",
       signal: AbortSignal.timeout(10000),
     });
+    if (r.status >= 300 && r.status < 400) throw new Error("ntfy-redirect geweigerd");
     if (!r.ok) throw new Error(`HTTP Error ${r.status}`);
     return r.status;
   }
@@ -489,32 +496,62 @@ export function createApp(opts = {}) {
 
   function send(res, code, obj, ctype = "application/json") {
     const b = Buffer.from(typeof obj === "string" ? obj : JSON.stringify(obj));
-    res.writeHead(code, { "Content-Type": `${ctype}; charset=utf-8`, "Content-Length": b.length });
+    res.writeHead(code, {
+      ...securityHeaders(),
+      "Content-Type": `${ctype}; charset=utf-8`,
+      "Content-Length": b.length,
+    });
     res.end(b);
   }
 
   function readBody(req) {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (e) => { if (!settled) { settled = true; reject(e); } };
+      const ok = (v) => { if (!settled) { settled = true; resolve(v); } };
       const n = Number(req.headers["content-length"] || 0);
-      if (!n) return resolve({});
+      if (n > MAX_BODY) {
+        const err = new Error("body te groot");
+        err.status = 413;
+        return fail(err);
+      }
+      if (!n) return ok({});
       const chunks = [];
-      req.on("data", (c) => chunks.push(c));
+      let size = 0;
+      req.on("data", (c) => {
+        size += c.length;
+        if (size > MAX_BODY) {
+          const err = new Error("body te groot");
+          err.status = 413;
+          fail(err);
+          req.destroy();
+          return;
+        }
+        chunks.push(c);
+      });
       req.on("end", () => {
         try {
           const raw = Buffer.concat(chunks).subarray(0, n).toString("utf8");
-          resolve(raw ? JSON.parse(raw) : {});
-        } catch (e) { reject(e); }
+          ok(raw ? JSON.parse(raw) : {});
+        } catch (e) { fail(e); }
       });
-      req.on("error", reject);
+      req.on("error", fail);
     });
   }
 
   async function handle(req, res) {
     const u = new URL(req.url, "http://127.0.0.1");
     if (u.pathname !== "/healthz" && !authorized(req)) {
-      res.writeHead(401, { "WWW-Authenticate": 'Basic realm="NS treinalerts"', "Content-Length": "0" });
+      if (authFails(clientIp(req))) {
+        send(res, 429, { error: "te veel pogingen" });
+        return;
+      }
+      res.writeHead(401, { ...securityHeaders(), "WWW-Authenticate": 'Basic realm="NS treinalerts"', "Content-Length": "0" });
       res.end();
       return;
+    }
+    if (req.method !== "GET" && req.method !== "HEAD" && isCrossSite(req)) {
+      return send(res, 403, { error: "cross-origin geweigerd" });
     }
     try {
       if (req.method === "GET") return await handleGet(req, res, u);
@@ -524,13 +561,16 @@ export function createApp(opts = {}) {
     } catch (e) {
       if (res.headersSent) { res.end(); return; }
       if (e instanceof SyntaxError) return send(res, 400, { error: "ongeldige json" });
-      send(res, 500, { error: errStr(e) });
+      if (e.status === 413) return send(res, 413, { error: "body te groot" });
+      send(res, 500, { error: "interne fout" });
     }
   }
 
   async function handleGet(req, res, u) {
-    if (u.pathname === "/") {
-      return send(res, 200, fs.readFileSync(path.join(base, "static", "index.html"), "utf8"), "text/html");
+    if (u.pathname === "/" || u.pathname === "/app.js" || u.pathname === "/app.css") {
+      const name = u.pathname === "/" ? "index.html" : u.pathname.slice(1);
+      const type = name.endsWith(".js") ? "text/javascript" : name.endsWith(".css") ? "text/css" : "text/html";
+      return send(res, 200, fs.readFileSync(path.join(base, "static", name), "utf8"), type);
     }
     if (u.pathname === "/healthz") return send(res, 200, { ok: true });
     if (u.pathname === "/api/subs" || u.pathname === "/api/export") return send(res, 200, readJson(subsFile, []));
@@ -641,6 +681,7 @@ export function createApp(opts = {}) {
   function handleDelete(res, u) {
     if (u.pathname.startsWith("/api/subs/")) {
       const id = decodeURIComponent(u.pathname.slice("/api/subs/".length));
+      if (!/^[0-9a-f]{8}$/.test(id)) return send(res, 400, { error: "ongeldig id" });
       writeJson(subsFile, readJson(subsFile, []).filter((s) => s.id !== id));
       return send(res, 200, { ok: true });
     }
@@ -659,7 +700,7 @@ export function createApp(opts = {}) {
     fs.mkdirSync(dataDir, { recursive: true });
     seedSubscriptions();
     const c = config();
-    log("INFO", `ntfy topic: ${c.ntfy_server}/${c.ntfy_topic}`);
+    log("INFO", `ntfy topic: ${c.ntfy_server}/${maskSecret(c.ntfy_topic)}`);
     if (!apiKey()) log("WARNING", "NS_API_KEY missing — UI draait, poller staat stil tot de key er is (zet in .env en herstart)");
     await listen();
     if (opts.poll !== false) startPoller();
