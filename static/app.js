@@ -30,12 +30,9 @@ for (let i = 0; i < D.length; i++) {
   $("days").append(el("label", {}, [input, document.createTextNode(` ${D[i]}`)]));
 }
 
-async function j(u, o) {
-  const r = await fetch(u, o);
-  return r.json();
-}
-
 let digestRev = 0;
+let serverDirty = 0;
+$("ntfyServer").oninput = () => { serverDirty += 1; };
 const touchDigest = () => { digestRev++; };
 $("digestOn").onchange = touchDigest;
 $("digestQuiet").onchange = touchDigest;
@@ -46,13 +43,17 @@ function fillStatus(s) {
   if (s.key) $("st").append("\u2705 NS API-key aanwezig");
   else $("st").append(el("span", { class: "warn", text: "\u26a0\ufe0f NS_API_KEY missing — zet de key in .env en herstart" }));
   const small = el("small");
-  small.append(document.createTextNode("ntfy-topic: "));
-  small.append(el("b", { text: s.topic || "" }));
-  small.append(document.createTextNode(` (${s.server || ""})`));
-  small.append(document.createElement("br"));
   small.append(document.createTextNode(`Laatste poll: ${s.last_poll || "-"} `));
   if (s.error) small.append(el("span", { class: "warn", text: s.error }));
   $("st").append(document.createElement("br"), small);
+  $("who").textContent = s.username ? s.username : "";
+  $("adminLink").hidden = s.role !== "admin";
+  const topic = s.topic || "";
+  const server = s.server || "";
+  $("topicText").textContent = topic;
+  $("topicLink").href = topic && server ? `${server}/${topic}` : "";
+  if (document.activeElement !== $("ntfyServer") && !serverDirty) $("ntfyServer").value = s.server && s.server !== "https://ntfy.sh" ? s.server : "";
+  if (topic) $("topicQr").src = `/api/topic/qr?t=${encodeURIComponent(topic)}`;
 }
 
 function fillSubs(subs) {
@@ -80,7 +81,9 @@ function fillSubs(subs) {
 }
 
 async function load() {
-  const s = await j("/api/status");
+  const statusRes = await api("/api/status");
+  if (!statusRes.ok) return;
+  const s = await statusRes.json();
   if (document.activeElement !== $("thr")) $("thr").value = s.threshold;
   if (document.activeElement !== $("win")) $("win").value = s.window_min;
   if (!digestRev) {
@@ -89,7 +92,8 @@ async function load() {
     $("digestQuiet").checked = !!s.digest_quiet;
   }
   fillStatus(s);
-  fillSubs(await j("/api/subs"));
+  const subsRes = await api("/api/subs");
+  if (subsRes.ok) fillSubs(await subsRes.json());
 }
 
 function search(f) {
@@ -102,7 +106,7 @@ function search(f) {
       const box = $(`s${f}`);
       box.replaceChildren();
       if (q.length < 2) return;
-      const r = await fetch(`/api/stations?q=${encodeURIComponent(q)}`);
+      const r = await api(`/api/stations?q=${encodeURIComponent(q)}`);
       const d = await r.json();
       if (!r.ok) {
         box.append(el("div", {}, [el("small", { text: `Zoeken niet mogelijk (${d.error}); typ de stationscode, bv. UT` })]));
@@ -140,38 +144,38 @@ async function add() {
   };
   if ($("once").checked) b.date = $("date").value || todayStr();
   else b.days = [...document.querySelectorAll("#days input:checked")].map((e) => e.value);
-  const r = await fetch("/api/subs", { method: "POST", body: JSON.stringify(b) });
+  const r = await api("/api/subs", { method: "POST", body: b });
   if (!r.ok) alert((await r.json()).error);
   load();
 }
 
 async function del(i) {
-  if (!/^[0-9a-f]{8}$/.test(String(i || ""))) return;
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(String(i || ""))) return;
   if (confirm("Verwijderen?")) {
-    await fetch(`/api/subs/${encodeURIComponent(i)}`, { method: "DELETE" });
+    await api(`/api/subs/${encodeURIComponent(i)}`, { method: "DELETE" });
     load();
   }
 }
 
 async function testMsg() {
-  const r = await fetch("/api/test", { method: "POST" });
+  const r = await api("/api/test", { method: "POST", body: {} });
   $("tr").textContent = r.ok ? "\u2705 verstuurd" : "\u274c mislukt";
 }
 
 async function saveThr() {
-  await fetch("/api/settings", { method: "POST", body: JSON.stringify({ threshold: $("thr").value, window_min: $("win").value }) });
+  await api("/api/settings", { method: "POST", body: { threshold: $("thr").value, window_min: $("win").value } });
   load();
 }
 
 async function saveDigest() {
   const rev = digestRev;
-  const r = await fetch("/api/settings", {
+  const r = await api("/api/settings", {
     method: "POST",
-    body: JSON.stringify({
+    body: {
       digest_enabled: $("digestOn").checked,
       digest_times: $("digestTimes").value,
       digest_quiet: $("digestQuiet").checked,
-    }),
+    },
   });
   if (!r.ok) {
     $("dr").textContent = `\u274c ${(await r.json()).error}`;
@@ -183,13 +187,56 @@ async function saveDigest() {
 }
 
 async function checkNow() {
-  const r = await fetch("/api/digest", { method: "POST" });
+  const r = await api("/api/digest", { method: "POST", body: {} });
   const d = await r.json();
   if (!r.ok) $("dr").textContent = `\u274c ${d.error || "mislukt"}`;
   else if (d.sent) $("dr").textContent = "\u2705 verstuurd";
   else $("dr").textContent = d.reason === "ongewijzigd" ? "geen wijziging" : "niets relevants";
 }
 
+async function copyTopic() {
+  const text = $("topicText").textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    $("copyMsg").textContent = "gekopieerd";
+  } catch {
+    $("copyMsg").textContent = "kopieer het topic handmatig";
+  }
+}
+
+async function regenTopic() {
+  if (!confirm("Nieuw topic? Het oude stopt met meldingen.")) return;
+  const r = await api("/api/topic", { method: "POST", body: {} });
+  if (!r.ok) {
+    $("copyMsg").textContent = "mislukt";
+    return;
+  }
+  $("copyMsg").textContent = "nieuw topic";
+  load();
+}
+
+async function saveServer() {
+  const rev = serverDirty;
+  const r = await api("/api/settings", { method: "POST", body: { ntfy_server: $("ntfyServer").value } });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    $("copyMsg").textContent = d.error || "server geweigerd";
+    return;
+  }
+  if (serverDirty === rev) serverDirty = 0;
+  $("copyMsg").textContent = "server opgeslagen";
+  load();
+}
+
+async function logout() {
+  await api("/api/logout", { method: "POST", body: {} });
+  location.assign("/login");
+}
+
+$("copyBtn").addEventListener("click", copyTopic);
+$("regenBtn").addEventListener("click", regenTopic);
+$("saveServerBtn").addEventListener("click", saveServer);
+$("logoutBtn").addEventListener("click", logout);
 $("addBtn").addEventListener("click", add);
 $("testBtn").addEventListener("click", testMsg);
 $("saveThrBtn").addEventListener("click", saveThr);
