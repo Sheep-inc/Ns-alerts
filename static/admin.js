@@ -25,6 +25,7 @@ async function load() {
   const r = await api("/api/admin/overview");
   if (r.status === 403) {
     $("err").textContent = "alleen voor beheerders";
+    for (const card of document.querySelectorAll("main .card")) card.hidden = true;
     return;
   }
   if (!r.ok) return;
