@@ -127,6 +127,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.ok(page.text.includes("Eenmalig"));
       assert.ok(page.text.includes("Dagelijkse check"));
       assert.ok(page.text.includes("Nu checken"));
+      assert.ok(page.text.includes("Minuten vóór vertrek"));
       assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
 
       const st = await call(app, "/api/status");
@@ -134,6 +135,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(st.body.topic, "topic-vast");
       assert.equal(st.body.server, ntfy.url);
       assert.equal(st.body.threshold, 3);
+      assert.equal(st.body.window_min, 30);
       assert.equal(st.body.digest_enabled, true);
       assert.deepEqual(st.body.digest_times, ["06:00", "21:00"]);
       assert.equal(st.body.digest_quiet, false);
@@ -195,6 +197,11 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal((await call(app, "/api/status")).body.threshold, 4);
       assert.equal((await call(app, "/api/settings", { method: "POST", body: JSON.stringify({ threshold: 0 }) })).status, 200);
       assert.equal((await call(app, "/api/status")).body.threshold, 1);
+      assert.equal((await call(app, "/api/status")).body.window_min, 30);
+      assert.equal((await call(app, "/api/settings", { method: "POST", body: JSON.stringify({ window_min: "45" }) })).body.ok, true);
+      const afterWin = await call(app, "/api/status");
+      assert.equal(afterWin.body.window_min, 45);
+      assert.equal(afterWin.body.threshold, 1);
 
       const sent = await call(app, "/api/test", { method: "POST" });
       assert.equal(sent.status, 200);
@@ -440,6 +447,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(after.body.digest_enabled, false);
       assert.equal(after.body.digest_quiet, true);
       assert.equal(after.body.threshold, 3);
+      assert.equal(after.body.window_min, 30);
       assert.deepEqual(await app.maybeDigest(new Date("2026-10-15T05:30:00Z")), []);
       assert.equal(hits.length, 2);
       const forced = await call(app, "/api/digest", { method: "POST", auth: false });

@@ -22,7 +22,8 @@ button{background:#003082;color:#fff;border:0;border-radius:8px;padding:12px 14p
 <label id="daysLbl">Dagen</label><div class="days" id="days"></div>
 <button onclick="add()">Toevoegen</button></div>
 <div class="card"><button onclick="test()">Test melding</button> <span id="tr"></span>
-<label>Vertragingsdrempel (min)</label><input id="thr" type="number" min="1"><button onclick="saveThr()">Opslaan</button></div>
+<label>Vertragingsdrempel (min)</label><input id="thr" type="number" min="1">
+<label>Minuten vóór vertrek</label><input id="win" type="number" min="1"><button onclick="saveThr()">Opslaan</button></div>
 <div class="card"><b>Dagelijkse check</b>
 <div class="days"><label><input id="digestOn" type="checkbox" checked> Aan</label></div>
 <label>Tijden (Europe/Amsterdam)</label><input id="digestTimes" placeholder="06:00, 21:00">
@@ -40,7 +41,7 @@ async function j(u,o){const r=await fetch(u,o);return r.json()}
 let digestRev=0;
 const touchDigest=()=>{digestRev++};
 $("digestOn").onchange=touchDigest;$("digestQuiet").onchange=touchDigest;$("digestTimes").oninput=touchDigest;
-async function load(){const s=await j("/api/status");if(document.activeElement!==$("thr"))$("thr").value=s.threshold;
+async function load(){const s=await j("/api/status");if(document.activeElement!==$("thr"))$("thr").value=s.threshold;if(document.activeElement!==$("win"))$("win").value=s.window_min;
 if(!digestRev){$("digestOn").checked=s.digest_enabled!==false;$("digestTimes").value=(s.digest_times||["06:00","21:00"]).join(", ");$("digestQuiet").checked=!!s.digest_quiet;}
 $("st").innerHTML=(s.key?"✅ NS API-key aanwezig":"<span class=warn>⚠️ NS_API_KEY missing — zet de key in .env en herstart</span>")+
 `<br><small>ntfy-topic: <b>${s.topic}</b> (${s.server})<br>Laatste poll: ${s.last_poll||"-"} ${s.error?"<span class=warn>"+s.error+"</span>":""}</small>`;
@@ -56,7 +57,7 @@ if($("once").checked)b.date=$("date").value||todayStr();else b.days=[...document
 const r=await fetch("/api/subs",{method:"POST",body:JSON.stringify(b)});if(!r.ok)alert((await r.json()).error);load()}
 async function del(i){if(confirm("Verwijderen?")){await fetch("/api/subs/"+i,{method:"DELETE"});load()}}
 async function test(){const r=await fetch("/api/test",{method:"POST"});$("tr").textContent=r.ok?"✅ verstuurd":"❌ mislukt"}
-async function saveThr(){await fetch("/api/settings",{method:"POST",body:JSON.stringify({threshold:$("thr").value})});load()}
+async function saveThr(){await fetch("/api/settings",{method:"POST",body:JSON.stringify({threshold:$("thr").value,window_min:$("win").value})});load()}
 async function saveDigest(){const rev=digestRev;const r=await fetch("/api/settings",{method:"POST",body:JSON.stringify({digest_enabled:$("digestOn").checked,digest_times:$("digestTimes").value,digest_quiet:$("digestQuiet").checked})});
 if(!r.ok){$("dr").textContent="❌ "+(await r.json()).error;return;}if(digestRev===rev)digestRev=0;$("dr").textContent="✅ opgeslagen";load()}
 async function checkNow(){const r=await fetch("/api/digest",{method:"POST"});const d=await r.json();

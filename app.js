@@ -224,7 +224,7 @@ export function createApp(opts = {}) {
       ["ntfy_topic", null],
       ["delay_threshold", 3],
       ["delay_grow", 5],
-      ["window_min", 60],
+      ["window_min", 30],
       ["poll_sec", 120],
       ["digest_enabled", true],
       ["digest_times", ["06:00", "21:00"]],
@@ -541,6 +541,7 @@ export function createApp(opts = {}) {
         topic: c.ntfy_topic,
         server: c.ntfy_server,
         threshold: c.delay_threshold,
+        window_min: c.window_min,
         last_poll: status.last_poll,
         error: status.error,
         digest_enabled: Boolean(c.digest_enabled),
@@ -619,12 +620,15 @@ export function createApp(opts = {}) {
       const c = config();
       let threshold;
       if (Object.prototype.hasOwnProperty.call(b, "threshold")) threshold = Math.max(1, pyInt(b.threshold));
+      let windowMin;
+      if (Object.prototype.hasOwnProperty.call(b, "window_min")) windowMin = Math.max(1, pyInt(b.window_min));
       let times;
       if (Object.prototype.hasOwnProperty.call(b, "digest_times")) {
         times = parseDigestTimes(b.digest_times);
         if (!times) return send(res, 400, { error: "tijden moeten HH:MM zijn, gescheiden door komma's" });
       }
       if (threshold != null) c.delay_threshold = threshold;
+      if (windowMin != null) c.window_min = windowMin;
       if (times) c.digest_times = times;
       if (Object.prototype.hasOwnProperty.call(b, "digest_enabled")) c.digest_enabled = Boolean(b.digest_enabled);
       if (Object.prototype.hasOwnProperty.call(b, "digest_quiet")) c.digest_quiet = Boolean(b.digest_quiet);
