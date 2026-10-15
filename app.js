@@ -437,12 +437,17 @@ export function createApp(opts = {}) {
     return stationsCache;
   }
 
-  async function notifyUser(user, title, body, prio = "default", kind = "alert") {
+  async function notifyUser(user, title, body, prio = "default", kind = "alert", extra = {}) {
     const server = userServer(user);
     if (!(await isAllowedNotifyUrl(`${server}/`, { allowPrivate: allowPrivate() }))) throw new Error("ntfy-server niet toegestaan");
     const mapped = { min: 1, low: 2, default: 3, high: 4, urgent: 5 }[prio];
     const priority = mapped ?? 3;
-    const payload = JSON.stringify({ topic: user.ntfy_topic, title, message: body, priority });
+    const payloadObj = { topic: user.ntfy_topic, title, message: body, priority };
+    if (kind === "alert") {
+      payloadObj.tags = prio === "urgent" ? ["train", "rotating_light"] : (prio === "high" ? ["train", "warning"] : ["train"]);
+      if (extra.click) payloadObj.click = extra.click;
+    }
+    const payload = JSON.stringify(payloadObj);
     const r = await fetch(`${server}/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -464,11 +469,26 @@ export function createApp(opts = {}) {
     return r.status;
   }
 
+  async function laterTrains(sub, dep, cur, trips) {
+    let alts = detect.alternativeTrains(trips, { after: sub.time, skipNumber: cur.trainNumber });
+    if (alts.length) return alts;
+    const more = await nsGet("/reisinformatie-api/api/v3/trips", {
+      fromStation: sub.from,
+      toStation: sub.to,
+      dateTime: isoOffsetSeconds(dep),
+      previousAdvices: 0,
+      nextAdvices: 6,
+    });
+    return detect.alternativeTrains(more?.trips, { after: sub.time, skipNumber: cur.trainNumber });
+  }
+
   async function checkSub(sub, dep) {
     let cur;
+    let trips = null;
+    let deps = null;
     if (sub.train) {
       const d = await nsGet("/reisinformatie-api/api/v2/departures", { station: sub.from, maxJourneys: 40 });
-      const deps = d?.payload?.departures || [];
+      deps = d?.payload?.departures || [];
       const m = deps.filter((x) => String(x?.product?.number) === String(sub.train));
       if (!m.length) return null;
       cur = detect.stateFromDeparture(m[0]);
@@ -481,7 +501,8 @@ export function createApp(opts = {}) {
         previousAdvices: 1,
         nextAdvices: 2,
       });
-      const t = detect.pickTrip(d.trips || [], sub.time);
+      trips = d.trips || [];
+      const t = detect.pickTrip(trips, sub.time);
       if (!t) return null;
       cur = detect.stateFromTrip(t);
     }
@@ -494,6 +515,22 @@ export function createApp(opts = {}) {
       if (e instanceof NoKey) throw e;
       log("WARNING", `disruptions failed: ${errStr(e)}`);
       cur.disruptions = [];
+    }
+    cur.alternatives = [];
+    if (cur.cancelled || (cur.delay || 0) >= 10 || cur.partCancelled) {
+      try {
+        cur.alternatives = sub.train
+          ? detect.alternativeDepartures(deps, {
+            after: (cur.planned || "").slice(11, 16) || sub.time,
+            skipNumber: sub.train,
+            direction: cur.direction || "",
+          })
+          : await laterTrains(sub, dep, cur, trips);
+      } catch (e) {
+        if (e instanceof NoKey) throw e;
+        log("WARNING", `alternatives failed: ${errStr(e)}`);
+        cur.alternatives = [];
+      }
     }
     return cur;
   }
@@ -534,9 +571,9 @@ export function createApp(opts = {}) {
         const ev = detect.diff(prev, cur, user.delay_threshold, user.delay_grow);
         st[k] = cur;
         if (ev.length) {
-          const [title, body, prio] = detect.formatMsg(sub, cur, ev);
+          const [title, body, prio, click] = detect.formatMsg(sub, cur, ev);
           log("INFO", `NOTIFY ${user.username}: ${title}`);
-          try { await notifyUser(user, title, body, prio, "alert"); }
+          try { await notifyUser(user, title, body, prio, "alert", { click }); }
           catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
         }
         if (oneTimeFinished(sub, when, cur.arrival)) drop.add(sub.id);
