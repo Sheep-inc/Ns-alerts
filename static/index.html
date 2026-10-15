@@ -1,6 +1,15 @@
 <!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NS treinalerts</title><link rel="stylesheet" href="/app.css"></head><body><header>🚆 NS treinalerts</header><main>
+<title>NS treinalerts</title><link rel="stylesheet" href="/app.css"></head><body>
+<header>🚆 NS treinalerts <span id="who"></span> <a id="adminLink" href="/beheer" hidden>Beheer</a> <button id="logoutBtn" type="button">Uitloggen</button></header><main>
 <div class="card" id="st">Laden…</div>
+<div class="card"><b>ntfy</b>
+<div id="topicText" class="topic"></div>
+<p><a id="topicLink" href="" rel="noopener">Abonneren in ntfy</a></p>
+<img id="topicQr" alt="QR-code voor ntfy" width="180" height="180">
+<div class="actions"><button id="copyBtn" type="button">Kopieer</button> <button id="regenBtn" type="button">Nieuw topic</button> <span id="copyMsg"></span></div>
+<label>Eigen ntfy-server (optioneel)</label><input id="ntfyServer" placeholder="https://ntfy.sh" autocomplete="off">
+<button id="saveServerBtn" type="button">Server opslaan</button>
+</div>
 <div class="card"><b>Mijn abonnementen</b><div id="subs"></div></div>
 <div class="card"><b>Nieuw abonnement</b>
 <label>Van (station)</label><input id="from" autocomplete="off" placeholder="bv. Utrecht Centraal of UT"><div class="sug" id="sfrom"></div>
@@ -21,4 +30,4 @@
 <div class="days"><label><input id="digestQuiet" type="checkbox"> Melding als alles rustig is</label></div>
 <button id="saveDigestBtn" type="button">Opslaan</button> <button id="checkBtn" type="button">Nu checken</button> <span id="dr"></span>
 <br><small>Ochtend (vóór 12:00) gaat over vandaag, avond over morgen.</small></div>
-</main><script src="/app.js"></script></body></html>
+</main><script src="/client.js"></script><script src="/app.js"></script></body></html>

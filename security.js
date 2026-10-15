@@ -42,16 +42,27 @@ export function clientIp(req) {
 
 export function makeLimiter({ limit, windowMs }) {
   const hits = new Map();
-  return function hit(key) {
+  function current(key) {
     const now = Date.now();
     const row = hits.get(key);
-    if (!row || row.reset < now) {
+    if (!row || row.reset < now) return null;
+    return row;
+  }
+  function hit(key) {
+    const now = Date.now();
+    const row = current(key);
+    if (!row) {
       hits.set(key, { n: 1, reset: now + windowMs });
       return false;
     }
     row.n += 1;
     return row.n > limit;
+  }
+  hit.blocked = (key) => {
+    const row = current(key);
+    return Boolean(row && row.n >= limit);
   };
+  return hit;
 }
 
 function ipv4ToInt(ip) {
