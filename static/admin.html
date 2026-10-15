@@ -1,0 +1,17 @@
+<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Beheer — NS treinalerts</title><link rel="stylesheet" href="/app.css"></head><body>
+<header>🚆 Beheer <a href="/">Terug</a> <button id="logoutBtn" type="button">Uitloggen</button></header><main>
+<p id="err" class="warn"></p>
+<div class="card"><b>Systeem</b><div id="system">Laden…</div></div>
+<div class="card"><b>Nieuwe uitnodiging</b>
+<label>Aantal keer te gebruiken</label><input id="maxUses" type="number" min="1" value="1">
+<label>Verloopt (optioneel)</label><input id="expires" type="datetime-local">
+<button id="inviteBtn" type="button">Code maken</button>
+<p id="newCode" class="topic"></p>
+</div>
+<div class="card"><b>Uitnodigingen</b><div id="invites"></div></div>
+<div class="card"><b>Gebruikers</b><div id="users"></div></div>
+<div class="card"><b>Meldingen</b><div id="notes"></div></div>
+<div class="card"><b>Storingschecks</b><div id="digests"></div></div>
+<div class="card"><b>Auditlog</b><div id="audit"></div></div>
+</main><script src="/client.js"></script><script src="/admin.js"></script></body></html>

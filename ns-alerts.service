@@ -1,5 +1,5 @@
 # Kopieer naar /etc/systemd/system/ns-alerts.service en pas paden/gebruiker aan.
-# Vereist Node.js 20 of nieuwer (/usr/bin/node).
+# Vereist Node.js 22 of nieuwer (/usr/bin/node), vanwege node:sqlite.
 [Unit]
 Description=NS treinalerts
 After=network-online.target
@@ -10,7 +10,7 @@ User=nsalerts
 WorkingDirectory=/opt/ns-alerts
 EnvironmentFile=/opt/ns-alerts/.env
 Environment=TZ=Europe/Amsterdam
-ExecStart=/usr/bin/node /opt/ns-alerts/app.js
+ExecStart=/usr/bin/node --experimental-sqlite /opt/ns-alerts/app.js
 Restart=always
 RestartSec=10
 NoNewPrivileges=true

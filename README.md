@@ -1,30 +1,33 @@
 # NS treinalerts
 
 Pushmeldingen (via ntfy) als je NS-trein vertraagd is, van spoor wisselt, vervangend vervoer heeft of uitvalt.
-Node.js 20 of nieuwer (LTS), alleen de standaardbibliotheek — geen extra npm-pakketten.
+Elke gebruiker heeft een eigen account, eigen abonnementen en een eigen ntfy-topic.
+Node.js 22 of nieuwer (`node:sqlite`, start met `--experimental-sqlite`).
 
 - **Starten/herstarten:** `./run.sh` (log: `data/app.log`)
-- **UI:** http://<box>:8780 (abonnementen, stations zoeken, knop 'Test melding', drempel)
-- **API-key:** zet `NS_API_KEY=...` in `.env` en draai `./run.sh`. Zonder key draait de UI wel, maar staat de poller stil ("NS_API_KEY missing").
-- **ntfy:** het topic staat in `data/config.json` (`ntfy_topic`). Installeer de ntfy-app → "+" → abonneer op dat topic (server ntfy.sh).
-- **Config** (`data/config.json`): `delay_threshold` (3), `delay_grow` (5 = nieuwe melding als vertraging ≥5 min verandert), `window_min` (30, minuten vóór vertrek; aan te passen in de UI), `poll_sec` (120), `digest_enabled` (aan), `digest_times` (`06:00` en `21:00`, Europe/Amsterdam), `digest_quiet` (uit).
-- **Dagelijkse check:** op die tijden één ntfy-melding als er iets relevants is. Ochtend (vóór 12:00) kijkt naar vandaag, avond naar morgen. Landelijk: type `CALAMITY`, tekst met staking/strike, impact ≥ 3 (of level high), of 12 of meer stations. Daarnaast storingen en werkzaamheden (`DISRUPTION` / `MAINTENANCE`) op stations van abonnementen die die dag actief zijn, als de geldigheidsperiode die dag overlapt. Calamiteit of staking krijgt priority high. Niets relevants → geen melding, tenzij `digest_quiet` aan staat ('Alles rustig'). Dezelfde storing komt niet opnieuw in de volgende check, tenzij die is gewijzigd. In de UI: tijden, aan/uit, en 'Nu checken' (werkt ook als de check uit staat).
-- **Tests:** `npm test`
-- **Seed:** bij de eerste start, als `data/subscriptions.json` nog niet bestaat en `seed/subscriptions.json` wél, wordt dat bestand gekopieerd. Standaardpad `./seed/subscriptions.json` (naast de app), overschrijfbaar met `SEED_FILE`. `seed/*.json` staat in `.gitignore`, behalve `seed/subscriptions.example.json`.
-- **Eenmalig:** vink 'Eenmalig' aan en kies een datum (`date`, `JJJJ-MM-DD`, standaard vandaag). Het abonnement wordt alleen die dag gevolgd en verdwijnt vanzelf na het venster (vertrek + 5 min, of zodra de trein is aangekomen). Abonnementen met alleen `days` blijven werken.
+- **UI:** http://<box>:8780 — inloggen, registreren met uitnodiging, abonnementen, ntfy-topic met QR, drempel, dagelijkse check. Beheerders: `/beheer`.
+- **API-key:** zet `NS_API_KEY=...` in `.env` en draai `./run.sh`. Zonder key draait de UI wel, maar staat de poller stil ("NS_API_KEY missing"). Dezelfde key geldt voor iedereen; identieke NS-verzoeken worden gedeeld (cache, max ~1 req/s).
+- **Eerste beheerder:** `ADMIN_USERNAME` en `ADMIN_PASSWORD` worden alleen gebruikt als de database nog leeg is. Daarna maakt de beheerder uitnodigingscodes (eenmalig of N keer, optioneel met vervaldatum).
+- **ntfy:** elke gebruiker ziet een eigen topic, een kopieerknop, een abonneer-link en een QR-code. "Nieuw topic" maakt een ander topic. Een eigen ntfy-server mag alleen `http` of `https` zijn; privé-adressen alleen met `NTFY_ALLOW_PRIVATE=1`.
+- **Bestaande installatie:** bij de eerste start met een beheerder worden `data/subscriptions.json`, `data/config.json`, `data/state.json` en `data/digest.json` één keer in het account van de beheerder gezet. `NTFY_TOPIC` wint van het topic in `config.json`. Daarna is `data/app.sqlite` de bron. `UI_PASSWORD` doet niets meer.
+- **Instellingen per gebruiker:** `delay_threshold` (3), `delay_grow` (5), `window_min` (30, minuten vóór vertrek), `digest_enabled`, `digest_times` (`06:00` en `21:00`, Europe/Amsterdam), `digest_quiet` (uit). De poll-interval blijft globaal (`POLL_SEC`, standaard 120).
+- **Dagelijkse check:** op de tijden van die gebruiker één ntfy-melding als er iets relevants is. Ochtend (vóór 12:00) kijkt naar vandaag, avond naar morgen. Landelijk: type `CALAMITY`, tekst met staking/strike, impact ≥ 3 (of level high), of 12 of meer stations. Daarnaast storingen en werkzaamheden (`DISRUPTION` / `MAINTENANCE`) op stations van de eigen abonnementen die die dag actief zijn. Calamiteit of staking krijgt priority high. Niets relevants → geen melding, tenzij `digest_quiet` aan staat. In de UI: tijden, aan/uit, en 'Nu checken'.
+- **Beheer:** gebruikers (status, laatste login, aantal abonnementen, gemaskeerd topic), uitnodigingen (restgebruik, vervaldatum, wie ze gebruikte), systeem (NS-key aanwezig, laatste poll, fout, NS-verzoeken vandaag, wachtrij), laatste meldingen, storingschecks, auditlog. Acties: code maken of intrekken, gebruiker uit- of aanzetten, verwijderen, eenmalige wachtwoordcode, 'Nu checken', testmelding.
+- **Tests:** `npm test` — **Lint:** `npm run lint`
+- **Seed:** als `data/subscriptions.json` nog niet bestaat en `seed/subscriptions.json` wél, wordt dat bestand gekopieerd en daarna geïmporteerd zodra er een beheerder is. `seed/*.json` staat in `.gitignore`, behalve `seed/subscriptions.example.json`.
+- **Eenmalig:** vink 'Eenmalig' aan en kies een datum (`date`, `JJJJ-MM-DD`). Het abonnement wordt alleen die dag gevolgd en verdwijnt na het venster (vertrek + 5 min, of zodra de trein is aangekomen).
 
-Werking: per actief abonnement (juiste weekdag, of de gekozen datum) wordt van 30 min vóór tot 5 min na vertrek elke 2 min gecheckt
-(trips v3 voor routes, departures v2 voor treinnummers, plus disruptions v3; cache + max ~1 req/s).
-Disruptions-antwoorden mogen gzip zijn. Trip-teksten komen uit `messages` en uit geneste `notes`-lijsten (`noteType` anders dan `ATTRIBUTE`). `partCancelled` geeft een melding dat de rit deels vervalt.
-Alleen bij een *wijziging* komt een melding (incl. "weer op tijd"). Uitval = priority urgent.
+Werking: per actief abonnement van een actieve gebruiker wordt van `window_min` vóór tot 5 min na vertrek gecheckt
+(trips v3 voor routes, departures v2 voor treinnummers, plus disruptions v3).
+Alleen bij een wijziging komt een melding, en alleen naar het topic van die gebruiker.
 
 ## Zelf hosten
 
-1. Node.js 20+ op de VPS. `git clone` de repo, `cp .env.example .env` en vul `NS_API_KEY` in. Zet bij voorkeur ook `NTFY_TOPIC` (lang en onraadbaar) en `UI_PASSWORD`.
-2. Abonnementen klaarzetten (optioneel): `cp seed/subscriptions.example.json seed/subscriptions.json` en pas aan. Ontbreekt `data/subscriptions.json` bij het opstarten, dan wordt de seed byte-voor-byte gekopieerd. Bestaat het databestand al, dan blijft het staan — verwijder het om opnieuw te seeden. Het formaat is hetzelfde als `data/subscriptions.json` (en als `/api/export`), zodat bestaande abonnementen meteen meegaan.
-3. **Docker:** `docker compose up -d --build`. Data (config, abonnementen, status) staat in `./data` (volume). `./seed` is read-only gemount. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Herstart automatisch (`unless-stopped`), healthcheck op `/healthz`.
-4. **Of systemd:** zet de code in `/opt/ns-alerts`, `sudo cp ns-alerts.service /etc/systemd/system/`, pas `User` aan, dan `sudo systemctl enable --now ns-alerts`. Node moet als `/usr/bin/node` beschikbaar zijn (20+).
-5. Abonnementen meenemen: oude server `curl -u x:WACHTWOORD http://oud:8780/api/export > subs.json`, nieuwe server `curl -u x:WACHTWOORD -X POST --data-binary @subs.json http://nieuw:8780/api/import`. Voorbeeld: `subs.example.json`.
-6. Zet de UI liefst achter een reverse proxy met HTTPS (Caddy/nginx) — basic auth over plain HTTP is niet veilig.
+1. Node.js 22+ op de VPS. `git clone` de repo, `npm ci --omit=dev`, `cp .env.example .env`. Vul `NS_API_KEY`, `ADMIN_USERNAME` en `ADMIN_PASSWORD` in.
+2. Abonnementen klaarzetten (optioneel): `cp seed/subscriptions.example.json seed/subscriptions.json` en pas aan. Ontbreekt `data/subscriptions.json`, dan wordt de seed gekopieerd. Met een beheerder gaat die lijst naar dat account.
+3. **Docker:** `docker compose up -d --build`. De database staat in `./data` (volume). `./seed` is read-only. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Healthcheck op `/healthz`.
+4. **Of systemd:** code in `/opt/ns-alerts`, `sudo cp ns-alerts.service /etc/systemd/system/`, pas `User` aan, `sudo systemctl enable --now ns-alerts`. Node 22+ als `/usr/bin/node`.
+5. Abonnementen meenemen tussen servers: ingelogd `curl -b cookies.txt http://oud:8780/api/export > subs.json` en op de nieuwe server `curl -b cookies.txt -X POST -H 'x-csrf-token: …' --data-binary @subs.json http://nieuw:8780/api/import`. Voorbeeld: `subs.example.json`.
+6. Zet de UI achter een reverse proxy met HTTPS en zet `COOKIE_SECURE=1`. Zie `SECURITY.md`.
 
-Env: `NS_API_KEY`, `NTFY_TOPIC`, `NTFY_SERVER`, `NTFY_ALLOW_PRIVATE` (`1` alleen voor een ntfy-server op een privé-adres), `UI_PASSWORD`, `PORT` (8780), `DATA_DIR` (./data), `SEED_FILE` (./seed/subscriptions.json), `DIGEST_TIMES` (bijv. `06:00,21:00`), `DIGEST_ENABLED` (`1`/`0`), `DIGEST_QUIET` (`1`/`0`). De digest-variabelen overschrijven `data/config.json`. `/healthz` is altijd zonder wachtwoord bereikbaar. Zie `SECURITY.md` voor de uitgevoerde controles.
+`/healthz` is zonder sessie bereikbaar. Overige API-routes eisen een sessiecookie (`HttpOnly`, `SameSite=Lax`) en op schrijfacties een CSRF-token (`x-csrf-token`, gelijk aan het `csrf`-cookie).
