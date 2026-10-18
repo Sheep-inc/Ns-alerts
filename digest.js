@@ -180,6 +180,10 @@ function activeOnDay(sub, ymd, weekday) {
   return days.includes(weekday);
 }
 
+export function travelingOnDay(subs, ymd, weekday) {
+  return (subs || []).some((sub) => activeOnDay(sub, ymd, weekday));
+}
+
 export function stationsForDay(subs, ymd, weekday) {
   const set = new Set();
   for (const sub of subs || []) {
@@ -276,6 +280,10 @@ function digestSections(rows) {
 }
 
 export function buildDigest({ disruptions, subs, ymd, weekday, label, previous, quiet }) {
+  const empty = { sent: false, quiet: false, title: "", body: "", priority: "default", next: { events: {} }, count: 0 };
+  if (!travelingOnDay(subs, ymd, weekday)) {
+    return { ...empty, reason: "geen reis" };
+  }
   const stations = stationsForDay(subs, ymd, weekday);
   const relevant = [];
   for (const item of disruptions || []) {

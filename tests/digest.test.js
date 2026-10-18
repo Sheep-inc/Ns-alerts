@@ -117,9 +117,9 @@ test("weekday and one-time subscriptions decide the route bucket", () => {
     previous: {},
     quiet: false,
   });
-  assert.equal(mondayOnly.body.includes("Jouw traject"), false);
-  assert.equal(mondayOnly.body.includes("Seinbeeld"), false);
-  assert.ok(mondayOnly.body.includes("Staking"));
+  assert.equal(mondayOnly.sent, false);
+  assert.equal(mondayOnly.reason, "geen reis");
+  assert.equal(mondayOnly.body.includes("Staking"), false);
 
   const once = buildDigest({
     disruptions,
@@ -140,8 +140,25 @@ test("weekday and one-time subscriptions decide the route bucket", () => {
     previous: {},
     quiet: false,
   });
+  assert.equal(nextDay.sent, false);
+  assert.equal(nextDay.reason, "geen reis");
   assert.equal(nextDay.body.includes("Amsterdam Zuid"), false);
-  assert.ok(nextDay.body.includes("Calamiteit"));
+  assert.equal(nextDay.body.includes("Calamiteit"), false);
+});
+
+test("no digest on a rest day, even for national events or quiet all-clear", () => {
+  const sunday = buildDigest({
+    disruptions,
+    subs: weekly,
+    ymd: "2026-10-18",
+    weekday: "zo",
+    label: "vandaag",
+    previous: {},
+    quiet: true,
+  });
+  assert.equal(sunday.sent, false);
+  assert.equal(sunday.reason, "geen reis");
+  assert.equal(sunday.body, "");
 });
 
 test("unchanged events are skipped unless the text changed, and quiet is optional", () => {
@@ -254,11 +271,11 @@ test("high impact, open-ended active items and station count", () => {
   assert.equal(small.sent, false);
 });
 
-test("live staking snapshot is a high-priority national digest", () => {
+test("live staking snapshot is a high-priority national digest on a travel day", () => {
   const live = JSON.parse(readFileSync(path.join(root, "tests/fixtures/live_disruptions.json"), "utf8"));
   const built = buildDigest({
     disruptions: live,
-    subs: [],
+    subs: weekly,
     ymd: "2026-10-14",
     weekday: "wo",
     label: "vandaag",
@@ -267,7 +284,18 @@ test("live staking snapshot is a high-priority national digest", () => {
   });
   assert.equal(built.sent, true);
   assert.equal(built.priority, "high");
-  assert.equal(built.count, live.length);
+  assert.ok(built.count >= 1);
   assert.ok(built.body.includes("Staking"));
   assert.ok(built.body.includes("Heerlen"));
+  const rest = buildDigest({
+    disruptions: live,
+    subs: weekly,
+    ymd: "2026-10-18",
+    weekday: "zo",
+    label: "vandaag",
+    previous: {},
+    quiet: false,
+  });
+  assert.equal(rest.sent, false);
+  assert.equal(rest.reason, "geen reis");
 });
