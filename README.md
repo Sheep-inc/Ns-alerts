@@ -2,7 +2,7 @@
 
 Pushmeldingen (via ntfy) als je NS-trein vertraagd is, van spoor wisselt, vervangend vervoer heeft of uitvalt.
 Elke gebruiker heeft een eigen account, eigen abonnementen en een eigen ntfy-topic.
-Node.js 22 of nieuwer (`node:sqlite`, start met `--experimental-sqlite`).
+Node.js 20 of nieuwer. Data staat in SQLite via `better-sqlite3`.
 
 - **Starten/herstarten:** `./run.sh` (log: `data/app.log`)
 - **UI:** http://<box>:8780 — inloggen, registreren met uitnodiging, abonnementen, ntfy-topic met QR, drempel, dagelijkse check. Beheerders: `/beheer`.
@@ -23,7 +23,7 @@ Alleen bij een wijziging komt een melding, en alleen naar het topic van die gebr
 
 ## Zelf hosten
 
-1. Node.js 22+ op de VPS. `git clone` de repo, `npm ci --omit=dev`, `cp .env.example .env`. Vul `NS_API_KEY`, `ADMIN_USERNAME` en `ADMIN_PASSWORD` in.
+1. Node.js 20+ op de VPS. `git clone` de repo, `npm ci --omit=dev`, `cp .env.example .env`. Vul `NS_API_KEY`, `ADMIN_USERNAME` en `ADMIN_PASSWORD` in.
 2. Abonnementen klaarzetten (optioneel): `cp seed/subscriptions.example.json seed/subscriptions.json` en pas aan. Ontbreekt `data/subscriptions.json`, dan wordt de seed gekopieerd. Met een beheerder gaat die lijst naar dat account.
 3. **Docker:** `docker compose up -d --build`. De database staat in `./data` (volume). `./seed` is read-only. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Healthcheck op `/healthz`.
 4. **Of systemd:** code in `/opt/ns-alerts`, `sudo cp ns-alerts.service /etc/systemd/system/`, pas `User` aan, `sudo systemctl enable --now ns-alerts`. Node 22+ als `/usr/bin/node`.

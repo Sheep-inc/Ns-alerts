@@ -92,8 +92,48 @@ async function load() {
     $("digestQuiet").checked = !!s.digest_quiet;
   }
   fillStatus(s);
+  fillAlerts(s.alerts || []);
+  fillNotes(s.notifications || []);
   const subsRes = await api("/api/subs");
   if (subsRes.ok) fillSubs(await subsRes.json());
+}
+
+function fillAlerts(alerts) {
+  $("alerts").replaceChildren();
+  if (!alerts.length) {
+    $("alerts").append(el("small", { text: "Nog geen abonnementen om te volgen. Voeg er hieronder een toe." }));
+    return;
+  }
+  for (const a of alerts) {
+    const box = el("div", { class: `sub alert ${a.status || "idle"}` });
+    const text = el("div");
+    text.append(el("div", { text: a.label || "" }));
+    const bits = [];
+    if (a.status === "cancelled") bits.push("Rijdt niet");
+    else if (a.status === "alternative") bits.push("Vervangend vervoer");
+    else if (a.status === "delayed") bits.push(`+${a.delay} min`);
+    else if (a.status === "ok") bits.push("Op tijd");
+    else if (a.watching) bits.push("Wordt nu gevolgd");
+    else bits.push("Buiten venster");
+    if (a.departure) bits.push(`vertrek ${a.departure}`);
+    if (a.track) bits.push(`spoor ${a.track}`);
+    text.append(el("small", { text: bits.join(" · ") }));
+    if ((a.messages || []).length) text.append(el("small", { text: a.messages.join(" · ") }));
+    box.append(text);
+    $("alerts").append(box);
+  }
+}
+
+function fillNotes(notes) {
+  $("notes").replaceChildren();
+  if (!notes.length) {
+    $("notes").append(el("small", { text: "Nog geen meldingen. Die komen hier (en in ntfy) als iets wijzigt." }));
+    return;
+  }
+  for (const n of notes) {
+    const when = (n.created_at || "").replace("T", " ").slice(0, 16);
+    $("notes").append(el("div", { class: "log", text: `${when} · ${n.title || ""}${n.body ? ` — ${n.body}` : ""}` }));
+  }
 }
 
 function search(f) {
@@ -191,7 +231,7 @@ async function checkNow() {
   const d = await r.json();
   if (!r.ok) $("dr").textContent = `\u274c ${d.error || "mislukt"}`;
   else if (d.sent) $("dr").textContent = "\u2705 verstuurd";
-  else $("dr").textContent = d.reason === "ongewijzigd" ? "geen wijziging" : "niets relevants";
+  else $("dr").textContent = d.reason === "herinnering" ? "herinnering verstuurd" : "niets relevants";
 }
 
 async function copyTopic() {

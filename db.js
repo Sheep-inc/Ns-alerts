@@ -1,5 +1,5 @@
-/** Per-user storage. node:sqlite (Node 22, --experimental-sqlite). */
-import { DatabaseSync } from "node:sqlite";
+/** Per-user storage via better-sqlite3. */
+import Database from "better-sqlite3";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
@@ -148,7 +148,7 @@ function userFromRow(r) {
 }
 
 export function openDb(file) {
-  const db = new DatabaseSync(file);
+  const db = new Database(file);
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
@@ -290,6 +290,9 @@ export function openDb(file) {
     },
     recentNotifications(limit = 40) {
       return q("SELECT username, kind, title, body, priority, created_at FROM notifications ORDER BY id DESC LIMIT ?").all(limit);
+    },
+    recentNotificationsForUser(userId, limit = 40) {
+      return q("SELECT kind, title, body, priority, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?").all(userId, limit);
     },
     addDigestRun(row) {
       q("INSERT INTO digest_runs (user_id, username, sent, count, reason, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(

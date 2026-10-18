@@ -155,6 +155,8 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.ok(page.text.includes("Dagelijkse check"));
       assert.ok(page.text.includes("Nu checken"));
       assert.ok(page.text.includes("Minuten vóór vertrek"));
+      assert.ok(page.text.includes("Laatste meldingen"));
+      assert.ok(page.text.includes("Nu onderweg"));
       assert.ok(page.text.includes('src="/app.js"'));
       assert.equal((await anon("/api/subs")).status, 401);
       assert.equal((await anon("/.env")).status, 404);
@@ -169,6 +171,8 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(st.body.role, "admin");
       assert.equal(st.body.digest_enabled, true);
       assert.deepEqual(st.body.digest_times, ["06:00", "21:00"]);
+      assert.ok(Array.isArray(st.body.alerts));
+      assert.ok(Array.isArray(st.body.notifications));
       const fullTopic = st.body.topic;
       assert.match(fullTopic, /^ns-alerts-/);
 
@@ -538,13 +542,16 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.ok(saved.slots.includes("2026-10-14 06:00"));
       assert.ok(saved.events["strike-ut"]);
       const again = await app.runDigest(adminUser(), { now: morning, slot: "06:00" });
-      assert.equal(again.sent, false);
-      assert.equal(again.reason, "ongewijzigd");
+      assert.equal(again.sent, true);
+      assert.equal(again.reason, "herinnering");
+      assert.equal(hits[1].title, "⚠️ Niets nieuws — storingen vandaag");
+      assert.ok(hits[1].message.includes("Er is niets nieuws — nog steeds:"));
+      assert.ok(hits[1].message.includes("Staking"));
       const evening = await app.maybeDigest(new Date("2026-10-14T19:00:00Z"));
       assert.equal(evening.length, 1);
       assert.equal(evening[0].sent, true);
-      assert.equal(hits[1].title, "🚧 Storingen morgen");
-      assert.ok(hits[1].message.includes("Werkzaamheden: Amsterdam Zuid"));
+      assert.equal(hits[2].title, "🚧 Storingen morgen");
+      assert.ok(hits[2].message.includes("Werkzaamheden: Amsterdam Zuid"));
       assert.deepEqual(await app.maybeDigest(new Date("2026-10-14T19:05:00Z")), []);
       const admin = await login(app);
       const st = await admin("/api/status");

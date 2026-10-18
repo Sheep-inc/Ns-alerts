@@ -155,9 +155,13 @@ test("unchanged events are skipped unless the text changed, and quiet is optiona
     previous: first.next,
     quiet: true,
   });
-  assert.equal(same.sent, false);
-  assert.equal(same.reason, "ongewijzigd");
+  assert.equal(same.sent, true);
+  assert.equal(same.reason, "herinnering");
   assert.equal(same.quiet, false);
+  assert.equal(same.title, "⚠️ Niets nieuws — storingen vandaag");
+  assert.match(same.body, /^Er is niets nieuws — nog steeds:\n\nLandelijk\n• Staking:/);
+  assert.ok(same.body.includes("Jouw traject"));
+  assert.equal(same.priority, "high");
 
   const changed = disruptions.map((d) => d.id === "local-ut" ? { ...d, title: "Seinbeeld Utrecht gewijzigd" } : d);
   const again = buildDigest({

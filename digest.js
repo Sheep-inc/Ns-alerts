@@ -255,6 +255,26 @@ function signature(item) {
 
 function line(item) { return `• ${kind(item)}: ${item.title || "storing"}`; }
 
+function isSevere(rows) {
+  return rows.some((r) => isCalamity(r.item) || isStrike(r.item));
+}
+
+function digestSections(rows) {
+  const large = rows.filter((r) => r.bucket === "large").slice(0, 6);
+  const route = rows.filter((r) => r.bucket === "route").slice(0, 8);
+  const lines = [];
+  if (large.length) {
+    lines.push("Landelijk");
+    for (const r of large) lines.push(line(r.item));
+  }
+  if (route.length) {
+    if (lines.length) lines.push("");
+    lines.push("Jouw traject");
+    for (const r of route) lines.push(line(r.item));
+  }
+  return lines;
+}
+
 export function buildDigest({ disruptions, subs, ymd, weekday, label, previous, quiet }) {
   const stations = stationsForDay(subs, ymd, weekday);
   const relevant = [];
@@ -288,26 +308,24 @@ export function buildDigest({ disruptions, subs, ymd, weekday, label, previous, 
     };
   }
   if (!fresh.length) {
-    return { sent: false, quiet: false, title: "", body: "", priority: "default", next, count: 0, reason: "ongewijzigd" };
+    const severe = isSevere(relevant);
+    return {
+      sent: true,
+      quiet: false,
+      title: `${severe ? "⚠️" : "ℹ️"} Niets nieuws — storingen ${label}`,
+      body: ["Er is niets nieuws — nog steeds:", "", ...digestSections(relevant)].join("\n"),
+      priority: severe ? "high" : "default",
+      next,
+      count: relevant.length,
+      reason: "herinnering",
+    };
   }
-  const severe = fresh.some((r) => isCalamity(r.item) || isStrike(r.item));
-  const large = fresh.filter((r) => r.bucket === "large").slice(0, 6);
-  const route = fresh.filter((r) => r.bucket === "route").slice(0, 8);
-  const lines = [];
-  if (large.length) {
-    lines.push("Landelijk");
-    for (const r of large) lines.push(line(r.item));
-  }
-  if (route.length) {
-    if (lines.length) lines.push("");
-    lines.push("Jouw traject");
-    for (const r of route) lines.push(line(r.item));
-  }
+  const severe = isSevere(fresh);
   return {
     sent: true,
     quiet: false,
     title: `${severe ? "⚠️" : "🚧"} Storingen ${label}`,
-    body: lines.join("\n"),
+    body: digestSections(fresh).join("\n"),
     priority: severe ? "high" : "default",
     next,
     count: fresh.length,

@@ -43,7 +43,7 @@ Twee varianten van dezelfde app:
 | Path | Een verzoek als `/.env` mag geen bestand buiten `static/` lezen. | Alleen een vaste lijst (`index.html`, `app.js`, `app.css`, de login/beheer-pagina's). Al het andere buiten `/api/` is 404. |
 | Body | Grote login-body's. | 1 MB wordt geweigerd vóór de sessiecheck (413). |
 | Docker | `qrcode` is een runtime-dependency. | `npm ci --omit=dev` in de image, daarna `USER node`. Geen secrets in de image. Database alleen op het volume `/app/data`. Rootfs blijft read-only in Compose. |
-| sqlite | `node:sqlite` is experimenteel. | Node 22+ en `--experimental-sqlite` in start, Docker, systemd en `run.sh`. |
+| sqlite | Database op schijf. | `better-sqlite3` (prepared statements). Bestand alleen onder `DATA_DIR`. |
 
 `npm audit` rapporteert geen bekende kwetsbaarheden. `npm run lint` geeft geen waarschuwingen.
 

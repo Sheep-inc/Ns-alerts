@@ -20,5 +20,10 @@ small{color:#666}
 .topic{word-break:break-all;font-family:ui-monospace,monospace}
 .actions button{width:auto;margin:8px 8px 0 0}
 .log{padding:6px 0;border-bottom:1px solid #eee;word-break:break-word}
+.alert.delayed{background:#fff4e0}
+.alert.cancelled,.alert.alternative{background:#fde8e8}
+.alert.ok{background:#e8f6ee}
+.alert.watching{background:#eef3ff}
+.alert small{display:block;margin-top:4px}
 img{max-width:100%;height:auto}
 @media (max-width:640px){button{width:100%} header a,header button,.actions button{width:auto}}

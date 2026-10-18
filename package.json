@@ -5,11 +5,11 @@
   "description": "NS treinalerts via ntfy",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "scripts": {
-    "start": "node --experimental-sqlite app.js",
-    "test": "NODE_OPTIONS='--experimental-sqlite' node --test",
+    "start": "node app.js",
+    "test": "node --test",
     "lint": "eslint ."
   },
   "devDependencies": {
@@ -17,6 +17,7 @@
     "eslint-plugin-security": "^4.2.0"
   },
   "dependencies": {
+    "better-sqlite3": "^12.4.1",
     "qrcode": "^1.5.4"
   }
 }

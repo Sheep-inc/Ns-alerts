@@ -1,5 +1,5 @@
 /**
- * NS treinalerts — één proces, Node.js 22+ (node:sqlite).
+ * NS treinalerts — één proces, Node.js 20+.
  * UI op :8780, accounts, achtergrond-poller en ntfy-push.
  */
 import crypto from "node:crypto";
@@ -7,7 +7,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import zlib from "node:zlib";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 import { cookieHeader, hashPassword, hashToken, readCookies, scryptCost, tokensEqual, validPassword, validUsername, verifyPassword } from "./auth.js";
 import { openDb } from "./db.js";
@@ -783,6 +783,35 @@ export function createApp(opts = {}) {
     return user;
   }
 
+  function currentAlerts(user) {
+    const subs = store.listSubs(user.id);
+    const st = store.readState(user.id);
+    const today = isoDate(new Date());
+    const now = new Date();
+    return subs.map((sub) => {
+      const cur = st[`${sub.id}@${today}`] || null;
+      let watching = false;
+      try { watching = Boolean(activeWindow(sub, now, user.window_min)); } catch { /* ignore */ }
+      const dest = sub.toName || sub.to || (sub.train ? `trein ${sub.train}` : "");
+      const label = `${sub.time || ""} ${sub.fromName || sub.from || ""} → ${dest}`.trim();
+      if (!cur) {
+        return { id: sub.id, label, watching, status: watching ? "watching" : "idle", delay: 0, cancelled: false };
+      }
+      return {
+        id: sub.id,
+        label,
+        watching: true,
+        status: cur.cancelled ? "cancelled" : (cur.alternative ? "alternative" : (cur.delay > 0 ? "delayed" : "ok")),
+        delay: cur.delay || 0,
+        cancelled: Boolean(cur.cancelled),
+        alternative: Boolean(cur.alternative),
+        track: cur.track || cur.plannedTrack || null,
+        departure: cur.departureActual || cur.departurePlanned || sub.time || null,
+        messages: Array.isArray(cur.messages) ? cur.messages.slice(0, 4) : [],
+      };
+    });
+  }
+
   async function statusFor(user) {
     return {
       key: Boolean(apiKey()),
@@ -798,6 +827,8 @@ export function createApp(opts = {}) {
       last_digest: digestStatus.get(user.id) || null,
       username: user.username,
       role: user.role,
+      alerts: currentAlerts(user),
+      notifications: store.recentNotificationsForUser(user.id, 30),
     };
   }
 
@@ -1221,7 +1252,8 @@ export function createApp(opts = {}) {
   return api;
 }
 
-const isDirect = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+const execPath = process.env.pm_exec_path || process.argv[1] || "";
+const isDirect = path.basename(execPath) === "app.js" || process.argv.some((a) => path.basename(a) === "app.js");
 if (isDirect) {
   loadEnv(BASE, process.env);
   const app = createApp();

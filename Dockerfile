@@ -13,4 +13,4 @@ USER node
 VOLUME /app/data
 EXPOSE 8780
 HEALTHCHECK --interval=60s --timeout=5s CMD node --input-type=module -e "const r=await fetch('http://127.0.0.1:8780/healthz',{signal:AbortSignal.timeout(4000)}); if(!r.ok) process.exit(1)"
-CMD ["node", "--experimental-sqlite", "app.js"]
+CMD ["node", "app.js"]
