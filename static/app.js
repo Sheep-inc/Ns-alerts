@@ -19,6 +19,18 @@ function el(tag, attrs, children) {
 }
 
 $("date").value = todayStr();
+function syncMode() {
+  const train = $("train").value.trim();
+  const arrive = $("arrive").checked;
+  $("rangeLbl").hidden = Boolean(train);
+  $("rangeRow").hidden = Boolean(train);
+  $("arriveRow").hidden = Boolean(train);
+  $("rangeHint").hidden = Boolean(train);
+  $("time").hidden = $("timeLbl").hidden = !train;
+  $("rangeLbl").textContent = arrive ? "Aankomst tussen" : "Vertrek tussen";
+}
+$("arrive").onchange = syncMode;
+$("train").oninput = syncMode;
 $("once").onchange = () => {
   const on = $("once").checked;
   $("date").hidden = $("dateLbl").hidden = !on;
@@ -65,7 +77,8 @@ function fillSubs(subs) {
   for (const x of subs) {
     const text = el("div");
     const line = el("div");
-    line.append(el("b", { text: x.time || "" }));
+    const span = x.timeFrom && x.timeTo ? `${x.timeFrom}\u2013${x.timeTo}` : (x.time || "");
+    line.append(el("b", { text: `${x.when === "arrive" ? "aankomst " : ""}${span}` }));
     line.append(document.createTextNode(` ${x.fromName || x.from || ""} \u2192 ${x.toName || x.to || ""}${x.train ? ` (trein ${x.train})` : ""}`));
     const meta = el("small");
     if (x.label) meta.append(document.createTextNode(`${x.label} `));
@@ -74,9 +87,16 @@ function fillSubs(subs) {
       meta.append(document.createTextNode(` ${x.date}`));
     } else meta.append(document.createTextNode((x.days || []).join(" ")));
     text.append(line, document.createElement("br"), meta);
+    const actions = el("div", { class: "actions" });
+    if (!x.timeFrom && x.to) {
+      const conv = el("button", { type: "button", class: "link", text: "Bereik" });
+      conv.addEventListener("click", () => toRange(x.id, x.time || ""));
+      actions.append(conv);
+    }
     const btn = el("button", { type: "button", text: "\u2715" });
     btn.addEventListener("click", () => del(x.id));
-    $("subs").append(el("div", { class: x.date ? "sub once" : "sub" }, [text, btn]));
+    actions.append(btn);
+    $("subs").append(el("div", { class: x.date ? "sub once" : "sub" }, [text, actions]));
   }
 }
 
@@ -84,8 +104,9 @@ async function load() {
   const statusRes = await api("/api/status");
   if (!statusRes.ok) return;
   const s = await statusRes.json();
-  if (document.activeElement !== $("thr")) $("thr").value = s.threshold;
-  if (document.activeElement !== $("win")) $("win").value = s.window_min;
+    if (document.activeElement !== $("thr")) $("thr").value = s.threshold;
+    if (document.activeElement !== $("win")) $("win").value = s.window_min;
+    if (document.activeElement !== $("margin")) $("margin").value = s.range_margin ?? 15;
   if (!digestRev) {
     $("digestOn").checked = s.digest_enabled !== false;
     $("digestTimes").value = (s.digest_times || ["06:00", "21:00"]).join(", ");
@@ -173,18 +194,35 @@ search("to");
 const code = (f) => (sel[f] ? sel[f].c : $(f).value.trim().toUpperCase());
 
 async function add() {
+  const train = $("train").value.trim();
   const b = {
     from: code("from"),
     fromName: sel.from?.n,
     to: $("to").value ? code("to") : "",
     toName: sel.to?.n,
-    time: $("time").value,
-    train: $("train").value.trim(),
     label: $("label").value,
   };
+  if (train) {
+    b.train = train;
+    b.time = $("time").value;
+  } else {
+    b.timeFrom = $("timeFrom").value;
+    b.timeTo = $("timeTo").value;
+    b.when = $("arrive").checked ? "arrive" : "depart";
+  }
   if ($("once").checked) b.date = $("date").value || todayStr();
   else b.days = [...document.querySelectorAll("#days input:checked")].map((e) => e.value);
   const r = await api("/api/subs", { method: "POST", body: b });
+  if (!r.ok) alert((await r.json()).error);
+  load();
+}
+
+async function toRange(id, time) {
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(String(id || ""))) return;
+  const margin = Number($("margin").value);
+  const m = Number.isFinite(margin) ? margin : 15;
+  if (!confirm(`Vast tijdstip ${time} omzetten naar een bereik van \u00b1${m} minuten?`)) return;
+  const r = await api(`/api/subs/${encodeURIComponent(id)}`, { method: "POST", body: { convert: true, margin: m } });
   if (!r.ok) alert((await r.json()).error);
   load();
 }
@@ -203,7 +241,7 @@ async function testMsg() {
 }
 
 async function saveThr() {
-  await api("/api/settings", { method: "POST", body: { threshold: $("thr").value, window_min: $("win").value } });
+  await api("/api/settings", { method: "POST", body: { threshold: $("thr").value, window_min: $("win").value, range_margin: $("margin").value } });
   load();
 }
 

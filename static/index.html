@@ -16,7 +16,11 @@
 <div class="card"><b>Nieuw abonnement</b>
 <label>Van (station)</label><input id="from" autocomplete="off" placeholder="bv. Utrecht Centraal of UT"><div class="sug" id="sfrom"></div>
 <label>Naar (station)</label><input id="to" autocomplete="off" placeholder="bv. Amsterdam Centraal of ASD"><div class="sug" id="sto"></div>
-<label>Vertrektijd</label><input id="time" type="time">
+<label id="rangeLbl">Vertrek tussen</label>
+<div class="range" id="rangeRow"><input id="timeFrom" type="time" aria-label="Van"><span>tot</span><input id="timeTo" type="time" aria-label="Tot"></div>
+<div class="days" id="arriveRow"><label><input id="arrive" type="checkbox"> Aankomst tussen</label></div>
+<small id="rangeHint">Elke rit in dit bereik wordt apart gevolgd, ook als de dienstregeling wijzigt.</small>
+<label id="timeLbl" hidden>Vertrektijd</label><input id="time" type="time" hidden>
 <label>Treinnummer (optioneel, i.p.v. bestemming)</label><input id="train" inputmode="numeric">
 <label>Omschrijving (optioneel)</label><input id="label" placeholder="bv. Naar werk">
 <div class="days"><label><input id="once" type="checkbox"> Eenmalig</label></div>
@@ -25,7 +29,9 @@
 <button id="addBtn" type="button">Toevoegen</button></div>
 <div class="card"><button id="testBtn" type="button">Test melding</button> <span id="tr"></span>
 <label>Vertragingsdrempel (min)</label><input id="thr" type="number" min="1">
-<label>Minuten vóór vertrek</label><input id="win" type="number" min="1"><button id="saveThrBtn" type="button">Opslaan</button></div>
+<label>Minuten vóór vertrek</label><input id="win" type="number" min="1">
+<label>Marge om een vaste tijd tot bereik te maken (± min)</label><input id="margin" type="number" min="0" max="180" value="15">
+<button id="saveThrBtn" type="button">Opslaan</button></div>
 <div class="card"><b>Dagelijkse check</b>
 <div class="days"><label><input id="digestOn" type="checkbox" checked> Aan</label></div>
 <label>Tijden (Europe/Amsterdam)</label><input id="digestTimes" placeholder="06:00, 21:00">

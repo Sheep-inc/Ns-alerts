@@ -6,7 +6,9 @@ import path from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import zlib from "node:zlib";
-import { DAYS, activeWindow, createApp, decodeNsBody, oneTimeFinished } from "../app.js";
+import Database from "better-sqlite3";
+import { DAYS, activeWindow, createApp, decodeNsBody, isRangeSub, oneTimeFinished, outerWindow, shiftClock, tripInWindow } from "../app.js";
+import { openDb } from "../db.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const open = [];
@@ -90,6 +92,27 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
     assert.equal(oneTimeFinished(once, new Date(2026, 9, 16, 9, 0), null), true);
     assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 8, 14), "2026-10-15T08:15:00+0200"), false);
     assert.equal(oneTimeFinished(once, new Date(2026, 9, 15, 8, 15), "2026-10-15T08:15:00+0200"), true);
+    const range = { timeFrom: "16:15", timeTo: "17:30", when: "depart", days: ["do"] };
+    assert.equal(isRangeSub(range), true);
+    assert.equal(isRangeSub({ time: "16:15" }), false);
+    assert.equal(outerWindow(range, thu(15, 44), 30), null);
+    assert.ok(outerWindow(range, thu(15, 45), 30));
+    assert.ok(outerWindow(range, thu(17, 35), 30));
+    assert.equal(outerWindow(range, thu(17, 35, 1), 30), null);
+    assert.equal(outerWindow(range, new Date(2026, 9, 16, 16, 30), 30), null);
+    assert.equal(outerWindow({ ...range, when: "arrive", timeFrom: "09:00", timeTo: "09:30" }, thu(5, 29), 30, 180), null);
+    assert.ok(outerWindow({ ...range, when: "arrive", timeFrom: "09:00", timeTo: "09:30" }, thu(5, 30), 30, 180));
+    assert.equal(tripInWindow("2026-10-15T16:22:00+0200", thu(15, 52), 30), true);
+    assert.equal(tripInWindow("2026-10-15T16:22:00+0200", thu(15, 51, 59), 30), false);
+    assert.equal(tripInWindow("2026-10-15T16:22:00+0200", thu(16, 27), 30), true);
+    assert.equal(tripInWindow("2026-10-15T16:22:00+0200", thu(16, 27, 1), 30), false);
+    const onceRange = { timeFrom: "16:15", timeTo: "17:30", date: "2026-10-15" };
+    assert.equal(oneTimeFinished(onceRange, thu(17, 35), null), false);
+    assert.equal(oneTimeFinished(onceRange, thu(17, 35, 1), "2026-10-15T17:20:00+0200"), true);
+    assert.equal(shiftClock("08:12", -15), "07:57");
+    assert.equal(shiftClock("08:12", 15), "08:27");
+    assert.equal(shiftClock("00:05", -30), "00:00");
+    assert.equal(shiftClock("23:50", 20), "23:59");
   });
 
   test("decodeNsBody gunzips disruptions payloads and parses plain JSON", () => {
@@ -155,6 +178,8 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.ok(page.text.includes("Dagelijkse check"));
       assert.ok(page.text.includes("Nu checken"));
       assert.ok(page.text.includes("Minuten vóór vertrek"));
+      assert.ok(page.text.includes("Vertrek tussen"));
+      assert.ok(page.text.includes("Aankomst tussen"));
       assert.ok(page.text.includes("Laatste meldingen"));
       assert.ok(page.text.includes("Nu onderweg"));
       assert.ok(page.text.includes('src="/app.js"'));
@@ -168,6 +193,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(st.body.server, ntfy.url);
       assert.equal(st.body.threshold, 3);
       assert.equal(st.body.window_min, 30);
+      assert.equal(st.body.range_margin, 15);
       assert.equal(st.body.role, "admin");
       assert.equal(st.body.digest_enabled, true);
       assert.deepEqual(st.body.digest_times, ["06:00", "21:00"]);
@@ -329,10 +355,14 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal((await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", time: "09:00", date: "2026-13-40" }) })).status, 400);
       assert.equal((await admin(`/api/subs/${once.body.id}`, { method: "DELETE" })).body.ok, true);
       const example = JSON.parse(readFileSync(path.join(root, "subs.example.json"), "utf8"));
-      assert.equal((await admin("/api/import", { method: "POST", body: JSON.stringify(example) })).body.count, 2);
+      assert.equal((await admin("/api/import", { method: "POST", body: JSON.stringify(example) })).body.count, 3);
       const exp = await admin("/api/export");
       assert.equal(exp.body[0].from, "UT");
+      assert.equal(exp.body[0].timeFrom, undefined);
       assert.deepEqual(exp.body[1].days, ["ma", "wo"]);
+      assert.equal(exp.body[2].timeFrom, "16:15");
+      assert.equal(exp.body[2].timeTo, "17:30");
+      assert.equal(exp.body[2].when, "depart");
       const dated = await admin("/api/import", { method: "POST", body: JSON.stringify([{ from: "UT", time: "07:00", date: "2026-11-01", to: "ASD" }]) });
       assert.equal(dated.body.count, 1);
       assert.equal((await admin("/api/export")).body[0].date, "2026-11-01");
@@ -574,6 +604,323 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       assert.equal(forced.status, 200);
       assert.equal(typeof forced.body.sent, "boolean");
       assert.ok(seen.every((u) => u === "https://gateway.apiportal.ns.nl/disruptions/v3"));
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("range api keeps a fixed time and can widen it", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path.join(dataDir, "subscriptions.json"), JSON.stringify([
+      { id: "legacyrng", from: "UT", to: "ASD", timeFrom: "16:15", timeTo: "17:30", when: "arrive", days: ["ma"] },
+    ]));
+    const app = await boot({ base: root, dataDir, port: 0, env: env() });
+    try {
+      const admin = await login(app);
+      const imported = (await admin("/api/subs")).body[0];
+      assert.equal(imported.when, "arrive");
+      assert.equal(imported.timeFrom, "16:15");
+      assert.equal(imported.time, "16:15");
+      const created = await admin("/api/subs", {
+        method: "POST",
+        body: JSON.stringify({ from: "ut", to: "asd", timeFrom: "16:15", timeTo: "17:30", when: "depart", days: ["do"], label: "Naar huis" }),
+      });
+      assert.equal(created.status, 200);
+      assert.equal(created.body.timeFrom, "16:15");
+      assert.equal(created.body.timeTo, "17:30");
+      assert.equal(created.body.when, "depart");
+      assert.equal(created.body.time, "16:15");
+      assert.equal((await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", timeFrom: "16:15", days: ["do"] }) })).body.error, "van en tot zijn allebei verplicht");
+      assert.equal((await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", timeFrom: "18:00", timeTo: "16:00", days: ["do"] }) })).body.error, "tot moet later zijn dan van");
+      assert.equal((await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", timeFrom: "16:15", timeTo: "17:30", train: "1", days: ["do"] }) })).body.error, "treinnummer hoort bij één vertrektijd");
+      assert.equal((await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", timeFrom: "16:15", timeTo: "17:30", when: "noon", days: ["do"] }) })).body.error, "kies vertrek of aankomst");
+      const byArrival = await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", timeFrom: "17:10", timeTo: "17:25", arriveBy: true, days: ["do"] }) });
+      assert.equal(byArrival.body.when, "arrive");
+      const fixed = await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", time: "08:12", days: ["do"] }) });
+      assert.equal(fixed.body.time, "08:12");
+      assert.equal(fixed.body.timeFrom, undefined);
+      const widened = await admin(`/api/subs/${fixed.body.id}`, { method: "POST", body: JSON.stringify({ convert: true, margin: 15 }) });
+      assert.equal(widened.status, 200);
+      assert.equal(widened.body.id, fixed.body.id);
+      assert.equal(widened.body.timeFrom, "07:57");
+      assert.equal(widened.body.timeTo, "08:27");
+      assert.equal(widened.body.when, "depart");
+      assert.equal((await admin(`/api/subs/${fixed.body.id}`, { method: "POST", body: JSON.stringify({ convert: true }) })).body.error, "dit is al een bereik");
+      const train = await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", time: "08:12", train: "3014", days: ["do"] }) });
+      assert.equal((await admin(`/api/subs/${train.body.id}`, { method: "POST", body: JSON.stringify({ convert: true, margin: 10 }) })).body.error, "een bereik heeft een bestemming nodig");
+      const edge = await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "UT", to: "ASD", time: "23:50", days: ["do"] }) });
+      const clamped = await admin(`/api/subs/${edge.body.id}`, { method: "POST", body: JSON.stringify({ convert: true, margin: 30 }) });
+      assert.equal(clamped.body.timeFrom, "23:20");
+      assert.equal(clamped.body.timeTo, "23:59");
+      assert.equal((await admin("/api/settings", { method: "POST", body: JSON.stringify({ range_margin: 20 }) })).body.ok, true);
+      assert.equal((await admin("/api/status")).body.range_margin, 20);
+      assert.equal((await admin("/api/settings", { method: "POST", body: JSON.stringify({ range_margin: 200 }) })).status, 400);
+      assert.equal((await admin("/api/settings", { method: "POST", body: JSON.stringify({ range_margin: -1 }) })).status, 400);
+    } finally { await app.close(); rmSync(base, { recursive: true, force: true }); }
+  });
+
+  test("old databases gain range columns", () => {
+    const base = tmp();
+    const file = path.join(base, "old.sqlite");
+    const raw = new Database(file);
+    raw.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY, username TEXT NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user',
+        disabled INTEGER NOT NULL DEFAULT 0, ntfy_topic TEXT NOT NULL, ntfy_server TEXT,
+        delay_threshold INTEGER NOT NULL DEFAULT 3, delay_grow INTEGER NOT NULL DEFAULT 5, window_min INTEGER NOT NULL DEFAULT 30,
+        digest_enabled INTEGER NOT NULL DEFAULT 1, digest_times TEXT NOT NULL DEFAULT '["06:00","21:00"]', digest_quiet INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL, last_login_at TEXT
+      );
+      CREATE TABLE subscriptions (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, from_code TEXT NOT NULL, from_name TEXT, to_code TEXT, to_name TEXT,
+        time TEXT NOT NULL, label TEXT, train TEXT, days TEXT, date TEXT
+      );
+    `);
+    raw.prepare("INSERT INTO users (id, username, password_hash, role, ntfy_topic, created_at) VALUES (?, ?, ?, ?, ?, ?)").run("u1", "oud", "x", "user", "topic", "2026-01-01T00:00:00Z");
+    raw.prepare("INSERT INTO subscriptions (id, user_id, from_code, to_code, time, days) VALUES (?, ?, ?, ?, ?, ?)").run("fixed001", "u1", "UT", "ASD", "08:12", '["ma"]');
+    raw.close();
+    const store = openDb(file);
+    try {
+      assert.equal(store.getUser("u1").range_margin, 15);
+      assert.equal(store.getSub("u1", "fixed001").timeFrom, undefined);
+      store.insertSub("u1", { id: "range001", from: "UT", to: "ASD", time: "16:15", timeFrom: "16:15", timeTo: "17:30", when: "depart", days: ["ma"] });
+      const saved = store.getSub("u1", "range001");
+      assert.equal(saved.timeFrom, "16:15");
+      assert.equal(saved.timeTo, "17:30");
+      assert.equal(saved.when, "depart");
+    } finally { store.close(); rmSync(base, { recursive: true, force: true }); }
+  });
+
+  test("one-time range is removed after timeTo plus five minutes", async () => {
+    const base = tmp();
+    const app = await boot({ base: root, dataDir: path.join(base, "data"), port: 0, env: env() });
+    try {
+      const admin = await login(app);
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "once0002", from: "UT", to: "ASD", timeFrom: "16:15", timeTo: "16:30", date: "2026-10-15" }) });
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "week0002", from: "UT", to: "ASD", timeFrom: "16:15", timeTo: "16:30", days: ["do"] }) });
+      await app.pollOnce(new Date(2026, 9, 15, 16, 20, 0));
+      assert.deepEqual((await admin("/api/subs")).body.map((s) => s.id).sort(), ["once0002", "week0002"]);
+      await app.pollOnce(new Date(2026, 9, 15, 16, 36, 0));
+      assert.deepEqual((await admin("/api/subs")).body.map((s) => s.id), ["week0002"]);
+    } finally { await app.close(); rmSync(base, { recursive: true, force: true }); }
+  });
+
+  test("a departure range monitors each trip and survives a timetable change", async () => {
+    const base = tmp();
+    const dataDir = path.join(base, "data");
+    const baseTrips = JSON.parse(readFileSync(path.join(root, "tests/fixtures/trips_range.json"), "utf8"));
+    const changed = JSON.parse(readFileSync(path.join(root, "tests/fixtures/trips_range_changed.json"), "utf8"));
+    const track = structuredClone(changed);
+    const moved = track.trips.find((t) => (t.legs || []).some((l) => l.product?.number === "3040"));
+    moved.legs[0].origin.actualTrack = "12";
+    let phase = "base";
+    const seen = [];
+    const realFetch = globalThis.fetch;
+    const disruption = [{
+      id: "d-ut", type: "DISRUPTION", title: "Utrecht Centraal - Amsterdam Centraal", isActive: true,
+      publicationSections: [{ section: { stations: [{ stationCode: "UT" }, { stationCode: "ASD" }] } }],
+    }];
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url);
+      if (u.startsWith("https://gateway.apiportal.ns.nl")) {
+        seen.push(u);
+        const json = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "content-type": "application/json" } });
+        if (u.includes("/api/v3/trips")) return json(phase === "base" ? baseTrips : (phase === "changed" ? changed : track));
+        if (u.includes("/disruptions/v3")) return json(disruption);
+        if (u.includes("/api/v2/stations")) return json({ payload: [] });
+        return new Response("missing", { status: 500 });
+      }
+      return realFetch(url, opts);
+    };
+    const hits = [];
+    const ntfy = await listen((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => { hits.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); res.writeHead(200); res.end(); });
+    });
+    const app = await boot({
+      base: root,
+      dataDir,
+      port: 0,
+      env: env({ NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_TOPIC: "range-topic", NTFY_ALLOW_PRIVATE: "1", DIGEST_ENABLED: "0", RANGE_REFRESH_SEC: "0" }),
+    });
+    try {
+      const admin = await login(app);
+      assert.equal((await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "range0001", from: "UT", fromName: "Utrecht", to: "ASD", toName: "Amsterdam", timeFrom: "16:15", timeTo: "17:30", days: ["do"] }) })).status, 200);
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "early0001", from: "UT", to: "ASD", timeFrom: "08:00", timeTo: "08:20", days: ["do"] }) });
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "monday001", from: "HT", to: "ASD", timeFrom: "16:15", timeTo: "17:30", days: ["ma"] }) });
+      const userId = app.store.getUserByName("admin").id;
+      await app.pollOnce(new Date(2026, 9, 15, 16, 20, 0));
+      const titles = hits.map((h) => h.title);
+      assert.deepEqual(titles.sort(), ["16:22 Utrecht → Amsterdam", "16:28 Utrecht → Amsterdam"]);
+      const cancel = hits.find((h) => h.title.startsWith("16:22"));
+      assert.equal(cancel.priority, 5);
+      assert.match(cancel.message, /Rijdt niet meer \(was gepland 16:22\)/);
+      assert.match(cancel.message, /Alternatief: 16:28 spoor 4; 16:52 spoor 7/);
+      assert.match(cancel.message, /Storing: Utrecht Centraal - Amsterdam Centraal/);
+      const transfer = hits.find((h) => h.title.startsWith("16:28"));
+      assert.match(transfer.message, /^Vertrek 16:28/);
+      assert.match(transfer.message, /Aankomst 17:18 → 17:26/);
+      assert.equal(transfer.message.includes("Storing:"), false);
+      assert.equal(transfer.message.includes("16:18"), false);
+      assert.equal(hits.filter((h) => h.message.includes("Storing:")).length, 1);
+      assert.ok(hits.every((h) => h.topic === "range-topic"));
+      const state = app.store.readState(userId);
+      assert.equal(state["range0001@2026-10-15@16:22@3022"].cancelled, true);
+      assert.equal(state["range0001@2026-10-15@16:28@5600"].arrivalDelay, 8);
+      assert.equal(state["range0001@2026-10-15@16:52@3040"], undefined);
+      const tripUrls = seen.filter((u) => u.includes("/api/v3/trips"));
+      assert.equal(tripUrls.length, 1);
+      const q = new URL(tripUrls[0]).searchParams;
+      assert.equal(q.get("fromStation"), "UT");
+      assert.equal(q.get("toStation"), "ASD");
+      assert.equal(q.get("previousAdvices"), "0");
+      assert.equal(q.get("nextAdvices"), "5");
+      assert.equal(q.get("searchForArrival"), null);
+      assert.match(q.get("dateTime"), /T16:15:00/);
+      assert.equal(seen.some((u) => u.includes("fromStation=HT")), false);
+      assert.equal(seen.some((u) => u.includes("/api/v2/departures")), false);
+      assert.equal(seen.filter((u) => u.includes("/disruptions/v3")).length, 1);
+      await app.pollOnce(new Date(2026, 9, 15, 16, 21, 0));
+      assert.equal(hits.length, 2);
+      phase = "changed";
+      await app.pollOnce(new Date(2026, 9, 15, 16, 25, 0));
+      assert.equal(hits.length, 3);
+      const added = hits[2];
+      assert.match(added.title, /^16:40 /);
+      assert.match(added.message, /Vertrek 16:40 → 16:51 \(\+11 min\)/);
+      assert.match(added.message, /Spoor 3 → 9/);
+      assert.match(added.message, /Reden: Later vertrek door een defecte trein/);
+      assert.equal(hits.slice(2).some((h) => h.title.includes("16:22") || h.message.includes("16:22")), false);
+      const after = app.store.readState(userId);
+      assert.equal(after["range0001@2026-10-15@16:40@3060"].delay, 11);
+      assert.equal(after["range0001@2026-10-15@16:52@3040"].delay, 0);
+      assert.equal(after["range0001@2026-10-15@16:28@5600"].arrivalDelay, 8);
+      phase = "track";
+      await app.pollOnce(new Date(2026, 9, 15, 16, 26, 0));
+      assert.equal(hits.length, 4);
+      assert.match(hits[3].title, /^16:52 /);
+      assert.match(hits[3].message, /Vertrek 16:52/);
+      assert.match(hits[3].message, /Spoor 7 → 12/);
+      assert.equal(hits[3].message.includes("16:40"), false);
+      await app.pollOnce(new Date(2026, 9, 15, 16, 26, 30));
+      assert.equal(hits.length, 4);
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("arrive-by range uses the final arrival and searchForArrival", async () => {
+    const base = tmp();
+    const trips = JSON.parse(readFileSync(path.join(root, "tests/fixtures/trips_range.json"), "utf8"));
+    const seen = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.startsWith("https://gateway.apiportal.ns.nl")) {
+        seen.push(u);
+        const json = (obj) => new Response(JSON.stringify(obj), { status: 200, headers: { "content-type": "application/json" } });
+        if (u.includes("/api/v3/trips")) return json(trips);
+        if (u.includes("/disruptions/v3")) return json([]);
+        return new Response("missing", { status: 500 });
+      }
+      return realFetch(url, opts);
+    };
+    const hits = [];
+    const ntfy = await listen((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => { hits.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); res.writeHead(200); res.end(); });
+    });
+    const app = await boot({
+      base: root,
+      dataDir: path.join(base, "data"),
+      port: 0,
+      env: env({ NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_ALLOW_PRIVATE: "1", DIGEST_ENABLED: "0", RANGE_REFRESH_SEC: "0" }),
+    });
+    try {
+      const admin = await login(app);
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "arrive001", from: "UT", fromName: "Utrecht", to: "ASD", toName: "Amsterdam", timeFrom: "17:10", timeTo: "17:25", when: "arrive", days: ["do"] }) });
+      await app.pollOnce(new Date(2026, 9, 15, 16, 20, 0));
+      assert.equal(hits.length, 1);
+      assert.match(hits[0].title, /^16:28 /);
+      assert.match(hits[0].message, /Aankomst 17:18 → 17:26/);
+      assert.equal(hits.some((h) => h.title.includes("16:22")), false);
+      const q = new URL(seen.find((u) => u.includes("/api/v3/trips"))).searchParams;
+      assert.equal(q.get("searchForArrival"), "true");
+      assert.match(q.get("dateTime"), /T17:10:00/);
+      assert.equal(seen.filter((u) => u.includes("/api/v3/trips")).length, 1);
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("range paging stops after four trip pages", async () => {
+    const base = tmp();
+    const seen = [];
+    const realFetch = globalThis.fetch;
+    const pad2 = (n) => String(n).padStart(2, "0");
+    const plus = (hhmm, mins) => {
+      const [h, m] = hhmm.split(":").map(Number);
+      const total = h * 60 + m + mins;
+      return `${pad2(Math.floor(total / 60))}:${pad2(total % 60)}`;
+    };
+    const all = [];
+    for (let i = 0; i < 40; i++) {
+      const hhmm = plus("08:00", i * 5);
+      all.push({
+        status: "NORMAL",
+        legs: [{
+          cancelled: false,
+          product: { number: String(4000 + i) },
+          origin: { stationCode: "UT", plannedDateTime: `2026-10-15T${hhmm}:00+0200`, plannedTrack: "1", actualTrack: "1" },
+          destination: { stationCode: "ASD", plannedDateTime: `2026-10-15T${plus(hhmm, 20)}:00+0200` },
+        }],
+      });
+    }
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (!u.startsWith("https://gateway.apiportal.ns.nl")) return realFetch(url, opts);
+      seen.push(u);
+      if (u.includes("/disruptions/v3")) return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+      if (!u.includes("/api/v3/trips")) return new Response("missing", { status: 500 });
+      const clock = new URL(u).searchParams.get("dateTime").slice(11, 16);
+      const from = all.findIndex((t) => t.legs[0].origin.plannedDateTime.slice(11, 16) >= clock);
+      const trips = from < 0 ? [] : all.slice(from, from + 5);
+      return new Response(JSON.stringify({ trips }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const hits = [];
+    const ntfy = await listen((req, res) => {
+      req.on("data", () => {});
+      req.on("end", () => { hits.push(1); res.writeHead(200); res.end(); });
+    });
+    const app = await boot({
+      base: root,
+      dataDir: path.join(base, "data"),
+      port: 0,
+      env: env({ NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_ALLOW_PRIVATE: "1", DIGEST_ENABLED: "0", RANGE_REFRESH_SEC: "0" }),
+    });
+    try {
+      const admin = await login(app);
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "page0001", from: "UT", to: "ASD", timeFrom: "08:00", timeTo: "12:00", days: ["do"] }) });
+      await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
+      const tripUrls = seen.filter((u) => u.includes("/api/v3/trips"));
+      assert.equal(tripUrls.length, 4);
+      assert.ok(tripUrls.every((u) => new URL(u).searchParams.get("nextAdvices") === "5" && new URL(u).searchParams.get("searchForArrival") == null));
+      const keys = Object.keys(app.store.readState(app.store.getUserByName("admin").id)).filter((k) => !k.endsWith("@disruptions"));
+      assert.equal(keys.length, 7);
+      assert.equal(hits.length, 0);
     } finally {
       globalThis.fetch = realFetch;
       await app.close();

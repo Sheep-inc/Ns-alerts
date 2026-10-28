@@ -282,3 +282,27 @@ test("later trains skip the watched departure and cancelled journeys", () => {
   const found = detect.alternativeDepartures(deps, { after: "08:12", skipNumber: "3014", direction: "Amsterdam Centraal" });
   assert.deepEqual(found, [{ time: "08:42", track: "4", delay: 0, train: "3016" }]);
 });
+
+test("range picks the first transit leg and the final arrival, and ignores walks", () => {
+  const trips = F("trips_range.json").trips;
+  const depart = detect.pickTripsInRange(trips, { from: "16:15", to: "17:30", when: "depart" });
+  assert.deepEqual(depart.map((t) => detect.tripEndpoints(t).departureClock), ["16:22", "16:28", "16:52"]);
+  const transfer = depart[1];
+  const ends = detect.tripEndpoints(transfer);
+  assert.equal(ends.departureClock, "16:28");
+  assert.equal(ends.arrivalClock, "17:18");
+  assert.equal(ends.trainNumber, "5600");
+  const state = detect.stateFromTrip(transfer);
+  assert.equal(state.departurePlanned, "16:28");
+  assert.equal(state.arrivalPlanned, "17:18");
+  assert.equal(state.arrivalActual, "17:26");
+  assert.equal(state.arrivalDelay, 8);
+  assert.equal(state.delay, 0);
+  const arrive = detect.pickTripsInRange(trips, { from: "17:10", to: "17:25", when: "arrive" });
+  assert.deepEqual(arrive.map((t) => detect.tripEndpoints(t).departureClock), ["16:28", "16:52"]);
+  const ev = detect.diff(null, { ...state, disruptions: [] });
+  const [title, body] = detect.formatMsg({ from: "UT", fromName: "Utrecht", to: "ASD", toName: "Amsterdam", timeFrom: "16:15", timeTo: "17:30", time: "16:15" }, state, ev);
+  assert.equal(title, "16:28 Utrecht → Amsterdam");
+  assert.match(body, /^Vertrek 16:28/);
+  assert.match(body, /Aankomst 17:18 → 17:26/);
+});
