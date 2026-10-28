@@ -1,0 +1,9 @@
+{
+  "gone9999@2026-10-15": { "delay": 1, "cancelled": false },
+  "junk": 1,
+  "e5f60718@2026-10-15": { "delay": 7, "cancelled": false, "track": "5" },
+  "b9c0d1e2@2026-10-15": { "delay": 3, "cancelled": false },
+  "b9c0d1e2@2026-10-15@16:22@3022": { "delay": 0, "cancelled": false, "track": "4" },
+  "b9c0d1e2@2026-10-15@disruptions": { "ids": ["d-ut"] },
+  "werk0001@2026-10-15": { "delay": 4, "cancelled": false, "track": "7" }
+}

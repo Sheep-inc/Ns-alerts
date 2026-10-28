@@ -1,0 +1,5 @@
+{
+  "ntfy_topic": "legacy-topic-value",
+  "delay_threshold": 4,
+  "extra_note": "bewaren"
+}

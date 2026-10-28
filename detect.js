@@ -69,11 +69,31 @@ function place(point) {
   return point.name || point.stationCode || "";
 }
 
+/** Train/bus legs. A leading or trailing walk is not the departure or the arrival. */
+export function transitLegs(trip) {
+  const all = trip?.legs || [];
+  const legs = all.filter((l) => (l.travelType ?? "PUBLIC_TRANSIT") !== "WALK");
+  return legs.length ? legs : all;
+}
+
+export function tripEndpoints(trip) {
+  const legs = transitLegs(trip);
+  const first = legs[0] || {};
+  const last = legs[legs.length - 1] || {};
+  const departure = first.origin?.plannedDateTime || "";
+  const arrival = last.destination?.plannedDateTime || "";
+  return {
+    departure,
+    arrival,
+    departureClock: hhmm(departure),
+    arrivalClock: hhmm(arrival),
+    trainNumber: first.product?.number ?? "",
+  };
+}
+
 export function stateFromTrip(trip) {
-  const all = trip.legs || [];
-  let legs = all.filter((l) => (l.travelType ?? "PUBLIC_TRANSIT") !== "WALK");
-  if (!legs.length) legs = all;
-  const first = legs[0];
+  const legs = transitLegs(trip);
+  const first = legs[0] || {};
   const o = first.origin || {};
   const cancelled = trip.status === "CANCELLED" || legs.some((l) => l.cancelled);
   const alt = trip.status === "ALTERNATIVE_TRANSPORT" || legs.some((l) => l.alternativeTransport);
@@ -143,13 +163,30 @@ export function stateFromDeparture(dep) {
   };
 }
 
-export function pickTrip(trips, hhmm) {
+export function pickTrip(trips, wanted) {
   for (const t of trips || []) {
-    const legs = t.legs || [];
-    const planned = legs[0]?.origin?.plannedDateTime || "";
-    if (legs.length && planned.slice(11, 16) === hhmm) return t;
+    const { departureClock } = tripEndpoints(t);
+    if (departureClock && departureClock === wanted) return t;
   }
   return null;
+}
+
+/** Trips whose first transit departure (or final arrival) falls inside [from, to]. */
+export function pickTripsInRange(trips, { from, to, when = "depart" } = {}) {
+  if (!from || !to || from > to) return [];
+  const out = [];
+  const seen = new Set();
+  for (const t of trips || []) {
+    const ends = tripEndpoints(t);
+    const clock = when === "arrive" ? ends.arrivalClock : ends.departureClock;
+    if (!clock || !ends.departureClock || clock < from || clock > to) continue;
+    const key = `${ends.departureClock}#${ends.trainNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  out.sort((a, b) => tripEndpoints(a).departure.localeCompare(tripEndpoints(b).departure) || String(tripEndpoints(a).trainNumber).localeCompare(String(tripEndpoints(b).trainNumber)));
+  return out;
 }
 
 function adviceOf(span) {
@@ -421,6 +458,7 @@ export function formatMsg(sub, cur, events) {
     const alt = altLine(cur.alternatives);
     if (alt) lines.push(alt);
   }
+  if (sub.timeFrom && sub.timeTo && t && !lines.some((line) => line.includes(t))) lines.unshift(`Vertrek ${t}`);
   let prio = events.some((e) => e[0] === "high") ? "high" : "default";
   const body = lines.join("\n");
   if (cur.cancelled || /rijdt niet meer/i.test(body)) prio = "urgent";

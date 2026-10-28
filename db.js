@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   delay_threshold INTEGER NOT NULL DEFAULT 3,
   delay_grow INTEGER NOT NULL DEFAULT 5,
   window_min INTEGER NOT NULL DEFAULT 30,
+  range_margin INTEGER NOT NULL DEFAULT 15,
   digest_enabled INTEGER NOT NULL DEFAULT 1,
   digest_times TEXT NOT NULL DEFAULT '["06:00","21:00"]',
   digest_quiet INTEGER NOT NULL DEFAULT 0,
@@ -49,6 +50,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   to_code TEXT,
   to_name TEXT,
   time TEXT NOT NULL,
+  time_from TEXT,
+  time_to TEXT,
+  when_mode TEXT,
   label TEXT,
   train TEXT,
   days TEXT,
@@ -119,6 +123,11 @@ function subFromRow(r) {
     label: r.label,
     train: r.train,
   };
+  if (r.time_from && r.time_to) {
+    sub.timeFrom = r.time_from;
+    sub.timeTo = r.time_to;
+    sub.when = r.when_mode === "arrive" ? "arrive" : "depart";
+  }
   if (r.date) sub.date = r.date;
   else sub.days = JSON.parse(r.days || "[]");
   return sub;
@@ -139,6 +148,7 @@ function userFromRow(r) {
     delay_threshold: r.delay_threshold,
     delay_grow: r.delay_grow,
     window_min: r.window_min,
+    range_margin: Number.isFinite(r.range_margin) ? r.range_margin : 15,
     digest_enabled: Boolean(r.digest_enabled),
     digest_times: times,
     digest_quiet: Boolean(r.digest_quiet),
@@ -152,6 +162,12 @@ export function openDb(file) {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
+  const userCols = db.prepare("PRAGMA table_info(users)").all();
+  if (!userCols.some((c) => c.name === "range_margin")) db.exec("ALTER TABLE users ADD COLUMN range_margin INTEGER NOT NULL DEFAULT 15");
+  const subCols = db.prepare("PRAGMA table_info(subscriptions)").all();
+  if (!subCols.some((c) => c.name === "time_from")) db.exec("ALTER TABLE subscriptions ADD COLUMN time_from TEXT");
+  if (!subCols.some((c) => c.name === "time_to")) db.exec("ALTER TABLE subscriptions ADD COLUMN time_to TEXT");
+  if (!subCols.some((c) => c.name === "when_mode")) db.exec("ALTER TABLE subscriptions ADD COLUMN when_mode TEXT");
   const q = (sql) => db.prepare(sql);
 
   function meta(k) {
@@ -187,8 +203,8 @@ export function openDb(file) {
       const cur = this.getUser(id);
       if (!cur) return null;
       const next = { ...cur, ...patch };
-      q(`UPDATE users SET ntfy_topic = ?, ntfy_server = ?, delay_threshold = ?, delay_grow = ?, window_min = ?, digest_enabled = ?, digest_times = ?, digest_quiet = ? WHERE id = ?`).run(
-        next.ntfy_topic, next.ntfy_server || null, next.delay_threshold, next.delay_grow, next.window_min,
+      q(`UPDATE users SET ntfy_topic = ?, ntfy_server = ?, delay_threshold = ?, delay_grow = ?, window_min = ?, range_margin = ?, digest_enabled = ?, digest_times = ?, digest_quiet = ? WHERE id = ?`).run(
+        next.ntfy_topic, next.ntfy_server || null, next.delay_threshold, next.delay_grow, next.window_min, next.range_margin ?? 15,
         next.digest_enabled ? 1 : 0, JSON.stringify(next.digest_times), next.digest_quiet ? 1 : 0, id,
       );
       return this.getUser(id);
@@ -244,11 +260,23 @@ export function openDb(file) {
     listSubs(userId) { return q("SELECT * FROM subscriptions WHERE user_id = ? ORDER BY time, rowid").all(userId).map(subFromRow); },
     getSub(userId, id) { return subFromRow(q("SELECT * FROM subscriptions WHERE user_id = ? AND id = ?").get(userId, id)); },
     insertSub(userId, s) {
-      q(`INSERT INTO subscriptions (id, user_id, from_code, from_name, to_code, to_name, time, label, train, days, date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        s.id, userId, s.from, s.fromName || null, s.to || "", s.toName || null, s.time, s.label || null, s.train || null,
+      q(`INSERT INTO subscriptions (id, user_id, from_code, from_name, to_code, to_name, time, time_from, time_to, when_mode, label, train, days, date)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        s.id, userId, s.from, s.fromName || null, s.to || "", s.toName || null, s.time,
+        s.timeFrom || null, s.timeTo || null, s.timeFrom ? (s.when === "arrive" ? "arrive" : "depart") : null,
+        s.label || null, s.train || null,
         s.date ? null : JSON.stringify(s.days || []), s.date || null,
       );
+    },
+    updateSub(userId, s) {
+      return q(`UPDATE subscriptions SET from_code = ?, from_name = ?, to_code = ?, to_name = ?, time = ?, time_from = ?, time_to = ?, when_mode = ?, label = ?, train = ?, days = ?, date = ?
+         WHERE user_id = ? AND id = ?`).run(
+        s.from, s.fromName || null, s.to || "", s.toName || null, s.time,
+        s.timeFrom || null, s.timeTo || null, s.timeFrom ? (s.when === "arrive" ? "arrive" : "depart") : null,
+        s.label || null, s.train || null,
+        s.date ? null : JSON.stringify(s.days || []), s.date || null,
+        userId, s.id,
+      ).changes;
     },
     deleteSub(userId, id) { return q("DELETE FROM subscriptions WHERE user_id = ? AND id = ?").run(userId, id).changes; },
     replaceSubs(userId, list) {

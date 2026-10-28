@@ -15,17 +15,36 @@ Node.js 20 of nieuwer. Data staat in SQLite via `better-sqlite3`.
 - **Beheer:** gebruikers (status, laatste login, aantal abonnementen, gemaskeerd topic), uitnodigingen (restgebruik, vervaldatum, wie ze gebruikte), systeem (NS-key aanwezig, laatste poll, fout, NS-verzoeken vandaag, wachtrij), laatste meldingen, storingschecks, auditlog. Acties: code maken of intrekken, gebruiker uit- of aanzetten, verwijderen, eenmalige wachtwoordcode, 'Nu checken', testmelding.
 - **Tests:** `npm test` — **Lint:** `npm run lint`
 - **Seed:** als `data/subscriptions.json` nog niet bestaat en `seed/subscriptions.json` wél, wordt dat bestand gekopieerd en daarna geïmporteerd zodra er een beheerder is. `seed/*.json` staat in `.gitignore`, behalve `seed/subscriptions.example.json`.
-- **Eenmalig:** vink 'Eenmalig' aan en kies een datum (`date`, `JJJJ-MM-DD`). Het abonnement wordt alleen die dag gevolgd en verdwijnt na het venster (vertrek + 5 min, of zodra de trein is aangekomen).
+- **Eenmalig:** vink 'Eenmalig' aan en kies een datum (`date`, `JJJJ-MM-DD`). Het abonnement wordt alleen die dag gevolgd en verdwijnt na het venster (vertrek + 5 min, of zodra de trein is aangekomen). Bij een bereik is dat `timeTo` + 5 min.
+- **Bereik:** route (van → naar) plus `timeFrom` en `timeTo` (`HH:MM`, dezelfde dag) in plaats van één vertrektijd. `when` is `depart` (standaard: vertrek van de eerste rit valt in het bereik) of `arrive` (aankomst van de laatste rit). Dagen of een eenmalige datum blijven gelijk. De app haalt de ritten op via NS trips v3 en volgt elke rit zoals een vaste tijd: vertraging, uitval, spoor, deels uitgevallen, storing, de Nederlandse oud→nieuw-tekst en alternatieven. De melding noemt de vertrektijd van die rit. Een rit die niet wijzigt, krijgt geen nieuwe melding. `window_min` geldt per rit. Een loop- of perronwandeling telt niet mee; de eerste trein of bus en de laatste aankomst wel.
+- **Dienstregeling:** zolang het bereik in het volgvenster zit, wordt de rittenlijst opnieuw opgehaald (standaard elke 180 s, `RANGE_REFRESH_SEC`). Een rit die uit de lijst verdwijnt, geeft geen melding, zodat een tijdswijziging niet spamt. Een nieuwe rit meldt alleen als er al iets aan de hand is. Blijft de rit bij NS staan als geannuleerd, dan komt wel een uitvalmelding. Lukt het ophalen niet, dan blijft de vorige lijst gelden.
+- **Vaste tijd:** een abonnement met alleen `time` blijft dat ene vertrek volgen. In de UI maakt `Bereik` er een bereik van, ± `range_margin` minuten (standaard 15, 0–180). De marge blijft binnen dezelfde dag. Een treinnummer blijft één vertrektijd en kan geen bereik zijn.
+- **Aankomst tussen:** het zoeken begint `ARRIVE_LEAD_MIN` (standaard 180) plus `window_min` vóór `timeFrom`, maar niet vóór 00:00. Een rit die nog vroeger vertrekt, valt buiten dat venster.
 
-Werking: per actief abonnement van een actieve gebruiker wordt van `window_min` vóór tot 5 min na vertrek gecheckt
-(trips v3 voor routes, departures v2 voor treinnummers, plus disruptions v3).
+Werking: per actief abonnement van een actieve gebruiker wordt van `window_min` vóór tot 5 min na vertrek gecheckt.
+Een bereik haalt eerst de ritten op (trips v3) en past dat venster per rit toe. Een vaste route blijft één trips-verzoek, een treinnummer gebruikt departures v2, plus disruptions v3.
 Alleen bij een wijziging komt een melding, en alleen naar het topic van die gebruiker.
+
+NS-verzoeken bij een bereik: hoogstens 4 aanroepen van trips v3 per verversing (5 `nextAdvices` per aanroep, dus hoogstens 20 ritten). De verversing loopt alleen in het volgvenster, niet de hele dag, en standaard eens per 180 s. Dezelfde route en hetzelfde bereik delen één cache, net als de rest van de NS-aanroepen (maximaal ongeveer 1 verzoek per seconde). Storingen blijven 5 minuten in de cache. Een extra trips-aanroep voor alternatieven gebeurt alleen als een rit uitvalt, deels uitvalt of minstens 10 minuten vertraging heeft én de al opgehaalde lijst geen latere rit bevat. Een heel druk bereik kan daardoor de laatste ritten missen; maak het bereik dan smaller.
+
+## Bijwerken vanaf de vorige versie
+
+De draaiende installatie heeft `data/subscriptions.json` (vaste vertrektijden), `data/config.json` en `data/state.json`. Zet de app stil vóórdat de nieuwe versie die bestanden voor het eerst importeert.
+
+1. Stoppen: `docker compose stop`, of `sudo systemctl stop ns-alerts`, of het proces van `./run.sh` stoppen.
+2. Code ophalen: `git pull` en `npm ci --omit=dev`. Met Docker: `docker compose build`.
+3. Eerst kijken, er wordt niets geschreven: `npm run migrate -- --dry-run`. Docker: `docker compose run --rm ns-alerts npm run migrate -- --dry-run`.
+4. Uitvoeren: `npm run migrate`. Het script maakt zelf een backup in `data/backups/<tijdstip>/`. Een extra kopie van `data/` mag ook. Vaste tijden blijven werken; ontbrekende config (zoals `window_min`) wordt aangevuld, bestaande waarden blijven staan. Statusregels die niet meer bij een abonnement horen, gaan weg zodat een oude rit niet opnieuw wordt gemeld.
+5. Wil je vaste tijden meteen een vertrekbereik maken: `npm run migrate -- --to-range=15` (zonder getal is de marge 15 minuten, dezelfde dag). Een treinnummer blijft één vertrektijd. Na `--to-range` kan een rit die al vertraging heeft één keer gemeld worden, omdat het oude geheugen bij die ene kloktijd niet meer past.
+6. Starten: `./run.sh`, `sudo systemctl restart ns-alerts`, of `docker compose up -d`.
+
+Opnieuw draaien verandert niets. Mislukt de controle, dan zet het script de backup terug en stopt het met een foutcode. `--data-dir` wijst een andere map aan dan `DATA_DIR` of `./data`.
 
 ## Zelf hosten
 
 1. Node.js 20+ op de VPS. `git clone` de repo, `npm ci --omit=dev`, `cp .env.example .env`. Vul `NS_API_KEY`, `ADMIN_USERNAME` en `ADMIN_PASSWORD` in.
 2. Abonnementen klaarzetten (optioneel): `cp seed/subscriptions.example.json seed/subscriptions.json` en pas aan. Ontbreekt `data/subscriptions.json`, dan wordt de seed gekopieerd. Met een beheerder gaat die lijst naar dat account.
-3. **Docker:** `docker compose up -d --build`. De database staat in `./data` (volume). `./seed` is read-only. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Healthcheck op `/healthz`.
+3. **Docker:** `docker compose up -d --build`. De database staat in `./data` (volume). `./seed` is read-only. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Healthcheck op `/healthz`. Migratie: `docker compose run --rm ns-alerts npm run migrate`.
 4. **Of systemd:** code in `/opt/ns-alerts`, `sudo cp ns-alerts.service /etc/systemd/system/`, pas `User` aan, `sudo systemctl enable --now ns-alerts`. Node 22+ als `/usr/bin/node`.
 5. Abonnementen meenemen tussen servers: ingelogd `curl -b cookies.txt http://oud:8780/api/export > subs.json` en op de nieuwe server `curl -b cookies.txt -X POST -H 'x-csrf-token: …' --data-binary @subs.json http://nieuw:8780/api/import`. Voorbeeld: `subs.example.json`.
 6. Zet de UI achter een reverse proxy met HTTPS en zet `COOKIE_SECURE=1`. Zie `SECURITY.md`.

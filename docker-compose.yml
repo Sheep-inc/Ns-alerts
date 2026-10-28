@@ -4,6 +4,9 @@ services:
     container_name: ns-alerts
     restart: unless-stopped
     env_file: .env
+    environment:
+      NPM_CONFIG_CACHE: /tmp/npm
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
     ports:
       - "8780:8780"
     read_only: true

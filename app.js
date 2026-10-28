@@ -26,6 +26,9 @@ import { MAX_BODY, clientIp, isAllowedNotifyUrl, isCrossSite, makeLimiter, maskS
 const BASE = path.dirname(fileURLToPath(import.meta.url));
 const NS = "https://gateway.apiportal.ns.nl";
 export const DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
+/** NS trips v3 documents at most 5 next advices per call. Four pages cover a busy window without a long burst. */
+const MAX_RANGE_PAGES = 4;
+const RANGE_PAGE_ADVICES = 5;
 const SESSION_MS = 14 * 24 * 3600 * 1000;
 const STATIC = {
   "/": ["index.html", "text/html"],
@@ -100,35 +103,99 @@ function clockMs(iso) {
   return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
 }
 
-function departureOnDate(sub) {
-  const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(sub.date || "");
-  if (!p) return null;
-  const [h, m] = String(sub.time).split(":").map((x) => Number(x));
+export function parseHHMM(v) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(v ?? "").trim());
+  if (!m) return "";
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return "";
+  return `${pad(h)}:${m[2]}`;
+}
+
+/** Shift HH:MM by minutes and keep the result on the same calendar day. */
+export function shiftClock(hhmm, delta) {
+  const time = parseHHMM(hhmm);
+  if (!time) return "";
+  const [h, m] = time.split(":").map(Number);
+  let total = h * 60 + m + delta;
+  if (total < 0) total = 0;
+  if (total > 23 * 60 + 59) total = 23 * 60 + 59;
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+}
+
+export function isRangeSub(sub) {
+  return Boolean(sub?.timeFrom && sub?.timeTo);
+}
+
+function clockOnDate(day, hhmm) {
+  const p = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day || "");
+  const time = parseHHMM(hhmm);
+  if (!p || !time) return null;
+  const [h, m] = time.split(":").map(Number);
   return new Date(+p[1], +p[2] - 1, +p[3], h, m, 0, 0);
 }
 
+function departureOnDate(sub) {
+  return clockOnDate(sub.date, sub.time);
+}
+
+function dayMatches(sub, now) {
+  if (sub?.date) return isoDate(now) === sub.date;
+  const days = sub?.days || DAYS;
+  return days.includes(DAYS[(now.getDay() + 6) % 7]);
+}
+
 export function activeWindow(sub, now, windowMin) {
-  const [h, m] = String(sub.time).split(":").map((x) => Number(x));
+  const time = parseHHMM(sub?.time);
+  if (!time || !dayMatches(sub, now)) return null;
   let dep;
-  if (sub.date) {
-    if (isoDate(now) !== sub.date) return null;
-    dep = departureOnDate(sub);
-    if (!dep) return null;
-  } else {
-    const days = sub.days || DAYS;
-    if (!days.includes(DAYS[(now.getDay() + 6) % 7])) return null;
+  if (sub.date) dep = departureOnDate({ ...sub, time });
+  else {
+    const [h, m] = time.split(":").map(Number);
     dep = new Date(now);
     dep.setHours(h, m, 0, 0);
   }
+  if (!dep) return null;
   const start = dep.getTime() - windowMin * 60000;
   const end = dep.getTime() + 5 * 60000;
   if (start <= now.getTime() && now.getTime() <= end) return dep;
   return null;
 }
 
-/** One-time subs (field `date`) end after departure + 5 min, or once arrival has passed. */
+/**
+ * When a range should be resolved. Depart: from window_min before timeFrom until timeTo + 5 min.
+ * Arrive: the same, pulled forward by arriveLead minutes (same calendar day, clamped at 00:00).
+ */
+export function outerWindow(sub, now, windowMin, arriveLead = 180) {
+  if (!isRangeSub(sub) || !dayMatches(sub, now)) return null;
+  const lead = (sub.when === "arrive" ? arriveLead : 0) + windowMin;
+  const start = clockOnDate(isoDate(now), shiftClock(sub.timeFrom, -lead));
+  const end = clockOnDate(isoDate(now), sub.timeTo);
+  if (!start || !end) return null;
+  const from = start.getTime();
+  const to = end.getTime() + 5 * 60000;
+  if (from <= now.getTime() && now.getTime() <= to) return end;
+  return null;
+}
+
+/** Per-trip monitoring window: windowMin before the planned departure until 5 min after. */
+export function tripInWindow(plannedIso, now, windowMin) {
+  const dep = clockMs(plannedIso);
+  if (dep == null) return false;
+  const start = dep - windowMin * 60000;
+  const end = dep + 5 * 60000;
+  const t = now.getTime();
+  return start <= t && t <= end;
+}
+
+/** One-time subs (field `date`) end after the last relevant clock + 5 min, or once arrival has passed. */
 export function oneTimeFinished(sub, now, arrivalIso) {
   if (!sub?.date) return false;
+  if (isRangeSub(sub)) {
+    const end = clockOnDate(sub.date, sub.timeTo);
+    if (!end) return false;
+    return now.getTime() > end.getTime() + 5 * 60000;
+  }
   const dep = departureOnDate(sub);
   if (!dep) return false;
   if (arrivalIso) {
@@ -209,6 +276,8 @@ export function createApp(opts = {}) {
   let nsChain = Promise.resolve();
   let pollChain = Promise.resolve();
   let nsQueued = 0;
+  let pollGen = 0;
+  const rangeMemo = new Map();
   let store = null;
   let dummyHash = null;
   const loginFails = makeLimiter({ limit: 8, windowMs: 10 * 60 * 1000 });
@@ -334,23 +403,9 @@ export function createApp(opts = {}) {
   }
 
   function legacySub(raw) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const from = String(raw.from || "").toUpperCase();
-    const time = String(raw.time || "");
-    if (!from || !time) return null;
-    const sub = {
-      id: validSubId(raw.id) ? raw.id : crypto.randomBytes(4).toString("hex"),
-      from,
-      fromName: raw.fromName ? String(raw.fromName).slice(0, 80) : null,
-      to: String(raw.to || "").toUpperCase(),
-      toName: raw.toName ? String(raw.toName).slice(0, 80) : null,
-      time,
-      label: raw.label ? String(raw.label).slice(0, 80) : null,
-      train: raw.train ? String(raw.train).slice(0, 12) : null,
-    };
-    if (raw.date) sub.date = String(raw.date);
-    else sub.days = Array.isArray(raw.days) ? raw.days : DAYS.slice(0, 5);
-    return sub;
+    const cleaned = cleanSub(raw);
+    if (cleaned.error || !cleaned.sub) return null;
+    return cleaned.sub;
   }
 
   async function migrateLegacy(admin) {
@@ -372,6 +427,7 @@ export function createApp(opts = {}) {
     if (Number.isFinite(cfg.delay_threshold)) patch.delay_threshold = cfg.delay_threshold;
     if (Number.isFinite(cfg.delay_grow)) patch.delay_grow = cfg.delay_grow;
     if (Number.isFinite(cfg.window_min)) patch.window_min = cfg.window_min;
+    if (Number.isFinite(cfg.range_margin)) patch.range_margin = Math.min(180, Math.max(0, Math.trunc(cfg.range_margin)));
     if (cfg.digest_enabled != null) patch.digest_enabled = Boolean(cfg.digest_enabled);
     if (Array.isArray(cfg.digest_times)) patch.digest_times = cfg.digest_times;
     if (cfg.digest_quiet != null) patch.digest_quiet = Boolean(cfg.digest_quiet);
@@ -470,9 +526,22 @@ export function createApp(opts = {}) {
     return r.status;
   }
 
+  function rangeRefreshSec() {
+    if (env.RANGE_REFRESH_SEC == null || String(env.RANGE_REFRESH_SEC).trim() === "") return 180;
+    const n = Number(env.RANGE_REFRESH_SEC);
+    if (!Number.isFinite(n) || n < 0) return 180;
+    return n;
+  }
+
+  function arriveLeadMin() {
+    const n = Number(env.ARRIVE_LEAD_MIN ?? 180);
+    if (!Number.isFinite(n) || n < 0) return 180;
+    return Math.min(12 * 60, Math.trunc(n));
+  }
+
   async function laterTrains(sub, dep, cur, trips) {
-    let alts = detect.alternativeTrains(trips, { after: sub.time, skipNumber: cur.trainNumber });
-    if (alts.length) return alts;
+    const alts = detect.alternativeTrains(trips, { after: sub.time, skipNumber: cur.trainNumber });
+    if (alts.length || !(dep instanceof Date) || Number.isNaN(dep.getTime())) return alts;
     const more = await nsGet("/reisinformatie-api/api/v3/trips", {
       fromStation: sub.from,
       toStation: sub.to,
@@ -481,6 +550,63 @@ export function createApp(opts = {}) {
       nextAdvices: 6,
     });
     return detect.alternativeTrains(more?.trips, { after: sub.time, skipNumber: cur.trainNumber });
+  }
+
+  async function fetchRangeTrips(sub, day) {
+    const when = sub.when === "arrive" ? "arrive" : "depart";
+    const collected = [];
+    let cursor = sub.timeFrom;
+    for (let page = 0; page < MAX_RANGE_PAGES; page++) {
+      const dt = clockOnDate(day, cursor);
+      if (!dt) break;
+      const params = {
+        fromStation: sub.from,
+        toStation: sub.to,
+        dateTime: isoOffsetSeconds(dt),
+        previousAdvices: 0,
+        nextAdvices: RANGE_PAGE_ADVICES,
+      };
+      if (when === "arrive") params.searchForArrival = true;
+      const data = await nsGet("/reisinformatie-api/api/v3/trips", params, 0);
+      const trips = Array.isArray(data?.trips) ? data.trips : [];
+      if (!trips.length) break;
+      collected.push(...trips);
+      const clocks = trips.map((t) => {
+        const ends = detect.tripEndpoints(t);
+        return when === "arrive" ? ends.arrivalClock : ends.departureClock;
+      }).filter(Boolean).sort();
+      const last = clocks[clocks.length - 1];
+      if (!last || last >= sub.timeTo) break;
+      const next = shiftClock(last, 1);
+      if (!next || next <= cursor) break;
+      cursor = next;
+    }
+    return detect.pickTripsInRange(collected, { from: sub.timeFrom, to: sub.timeTo, when });
+  }
+
+  async function resolveRange(sub, day) {
+    const when = sub.when === "arrive" ? "arrive" : "depart";
+    const key = `${sub.from}|${sub.to}|${day}|${sub.timeFrom}|${sub.timeTo}|${when}`;
+    const hit = rangeMemo.get(key);
+    const ttl = rangeRefreshSec();
+    const nowSec = Date.now() / 1000;
+    if (hit && !hit.failed && (hit.gen === pollGen || (ttl > 0 && nowSec - hit.at < ttl))) return hit.trips;
+    try {
+      const trips = await fetchRangeTrips(sub, day);
+      const sig = trips.map((t) => {
+        const ends = detect.tripEndpoints(t);
+        return `${ends.departureClock}#${ends.trainNumber}`;
+      }).join(",");
+      if (!hit || hit.sig !== sig) log("INFO", `bereik ${sub.from}→${sub.to} ${sub.timeFrom}–${sub.timeTo}: ${sig || "geen ritten"}`);
+      if (rangeMemo.size > 200) rangeMemo.clear();
+      rangeMemo.set(key, { at: nowSec, trips, failed: false, gen: pollGen, sig });
+      return trips;
+    } catch (e) {
+      if (e instanceof NoKey) throw e;
+      log("WARNING", `ritten ophalen mislukt: ${errStr(e)}`);
+      if (hit?.trips) return hit.trips;
+      return [];
+    }
   }
 
   async function checkSub(sub, dep) {
@@ -544,8 +670,90 @@ export function createApp(opts = {}) {
     }
   }
 
+  async function monitorFixed(user, sub, when, st, today) {
+    const dep = activeWindow(sub, when, user.window_min);
+    if (!dep) return false;
+    const cur = await checkSub(sub, dep);
+    if (!cur) return false;
+    const k = `${sub.id}@${today}`;
+    const prev = Object.prototype.hasOwnProperty.call(st, k) ? st[k] : null;
+    const ev = detect.diff(prev, cur, user.delay_threshold, user.delay_grow);
+    st[k] = cur;
+    if (ev.length) {
+      const [title, body, prio, click] = detect.formatMsg(sub, cur, ev);
+      log("INFO", `NOTIFY ${user.username}: ${title}`);
+      try { await notifyUser(user, title, body, prio, "alert", { click }); }
+      catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+    }
+    return oneTimeFinished(sub, when, cur.arrival);
+  }
+
+  async function monitorRange(user, sub, when, st, today) {
+    if (!outerWindow(sub, when, user.window_min, arriveLeadMin())) return false;
+    const list = await resolveRange(sub, sub.date || today);
+    let disList = [];
+    try {
+      const dis = await nsGet("/disruptions/v3", { isActive: "true" }, 300);
+      disList = Array.isArray(dis) ? dis : (dis?.payload || []);
+    } catch (e) {
+      if (e instanceof NoKey) throw e;
+      log("WARNING", `disruptions failed: ${errStr(e)}`);
+    }
+    const dKey = `${sub.id}@${today}@disruptions`;
+    const seen = new Set(Array.isArray(st[dKey]?.ids) ? st[dKey].ids : []);
+    for (const trip of list) {
+      const ends = detect.tripEndpoints(trip);
+      if (!ends.departureClock || !tripInWindow(ends.departure, when, user.window_min)) continue;
+      let cur;
+      try { cur = detect.stateFromTrip(trip); }
+      catch (e) { log("WARNING", `rit ${sub.id} ${ends.departureClock} overgeslagen: ${errStr(e)}`); continue; }
+      const stations = new Set([...(cur.stations || []), sub.from, sub.to]);
+      cur.disruptions = detect.relevantDisruptions(disList, stations);
+      cur.alternatives = [];
+      if (cur.cancelled || (cur.delay || 0) >= 10 || cur.partCancelled) {
+        try {
+          const depMs = clockMs(ends.departure);
+          cur.alternatives = await laterTrains(
+            { ...sub, time: ends.departureClock },
+            depMs == null ? null : new Date(depMs),
+            cur,
+            list,
+          );
+        } catch (e) {
+          if (e instanceof NoKey) throw e;
+          log("WARNING", `alternatives failed: ${errStr(e)}`);
+          cur.alternatives = [];
+        }
+      }
+      const k = `${sub.id}@${today}@${ends.departureClock}@${cur.trainNumber || ""}`;
+      const prev = Object.prototype.hasOwnProperty.call(st, k) ? st[k] : null;
+      const baseline = {
+        delay: 0,
+        cancelled: false,
+        track: cur.plannedTrack,
+        alternative: false,
+        partCancelled: false,
+        changeNotPossible: false,
+        arrivalDelay: 0,
+        ...(prev && typeof prev === "object" ? prev : {}),
+        disruptions: [...seen].map((id) => ({ id })),
+      };
+      const ev = detect.diff(baseline, cur, user.delay_threshold, user.delay_grow);
+      st[k] = cur;
+      for (const item of cur.disruptions || []) if (item && item.id != null) seen.add(item.id);
+      if (!ev.length) continue;
+      const [title, body, prio, click] = detect.formatMsg({ ...sub, time: ends.departureClock }, cur, ev);
+      log("INFO", `NOTIFY ${user.username}: ${title}`);
+      try { await notifyUser(user, title, body, prio, "alert", { click }); }
+      catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+    }
+    st[dKey] = { ids: [...seen] };
+    return oneTimeFinished(sub, when);
+  }
+
   async function pollOnceInner(now) {
     const when = now || new Date();
+    pollGen += 1;
     pruneFinished(when);
     if (!apiKey()) {
       status.error = "NS_API_KEY missing";
@@ -559,29 +767,19 @@ export function createApp(opts = {}) {
       const today = isoDate(when);
       const drop = new Set();
       for (const sub of subs) {
-        let dep;
-        try { dep = activeWindow(sub, when, user.window_min); }
-        catch (e) { log("WARNING", `check ${sub.id} failed: ${errStr(e)}`); status.error = errStr(e); continue; }
-        if (!dep) continue;
-        const k = `${sub.id}@${today}`;
-        let cur;
-        try { cur = await checkSub(sub, dep); }
-        catch (e) { log("WARNING", `check ${sub.id} failed: ${errStr(e)}`); status.error = errStr(e); continue; }
-        if (!cur) continue;
-        const prev = Object.prototype.hasOwnProperty.call(st, k) ? st[k] : null;
-        const ev = detect.diff(prev, cur, user.delay_threshold, user.delay_grow);
-        st[k] = cur;
-        if (ev.length) {
-          const [title, body, prio, click] = detect.formatMsg(sub, cur, ev);
-          log("INFO", `NOTIFY ${user.username}: ${title}`);
-          try { await notifyUser(user, title, body, prio, "alert", { click }); }
-          catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+        try {
+          const finished = isRangeSub(sub)
+            ? await monitorRange(user, sub, when, st, today)
+            : await monitorFixed(user, sub, when, st, today);
+          if (finished) drop.add(sub.id);
+        } catch (e) {
+          log("WARNING", `check ${sub.id} failed: ${errStr(e)}`);
+          status.error = errStr(e);
         }
-        if (oneTimeFinished(sub, when, cur.arrival)) drop.add(sub.id);
       }
       for (const id of drop) store.deleteSub(user.id, id);
       const next = {};
-      for (const [k, v] of Object.entries(st)) if (String(k).endsWith(today)) next[k] = v;
+      for (const [k, v] of Object.entries(st)) if (String(k).includes(`@${today}`)) next[k] = v;
       store.writeState(user.id, next);
     }
     status.error = null;
@@ -783,33 +981,70 @@ export function createApp(opts = {}) {
     return user;
   }
 
+  function alertFromState(sub, cur, id) {
+    const dest = sub.toName || sub.to || (sub.train ? `trein ${sub.train}` : "");
+    const t = cur?.departurePlanned || String(cur?.planned || "").slice(11, 16);
+    const label = `${t || sub.time || ""} ${sub.fromName || sub.from || ""} → ${dest}`.trim();
+    if (!cur) {
+      return { id, label, watching: false, status: "idle", delay: 0, cancelled: false };
+    }
+    return {
+      id,
+      label,
+      watching: true,
+      status: cur.cancelled ? "cancelled" : (cur.alternative ? "alternative" : (cur.delay > 0 ? "delayed" : "ok")),
+      delay: cur.delay || 0,
+      cancelled: Boolean(cur.cancelled),
+      alternative: Boolean(cur.alternative),
+      track: cur.track || cur.plannedTrack || null,
+      departure: cur.departureActual || cur.departurePlanned || t || sub.time || null,
+      messages: Array.isArray(cur.messages) ? cur.messages.slice(0, 4) : [],
+    };
+  }
+
   function currentAlerts(user) {
     const subs = store.listSubs(user.id);
     const st = store.readState(user.id);
     const today = isoDate(new Date());
     const now = new Date();
-    return subs.map((sub) => {
-      const cur = st[`${sub.id}@${today}`] || null;
-      let watching = false;
-      try { watching = Boolean(activeWindow(sub, now, user.window_min)); } catch { /* ignore */ }
-      const dest = sub.toName || sub.to || (sub.train ? `trein ${sub.train}` : "");
-      const label = `${sub.time || ""} ${sub.fromName || sub.from || ""} → ${dest}`.trim();
-      if (!cur) {
-        return { id: sub.id, label, watching, status: watching ? "watching" : "idle", delay: 0, cancelled: false };
+    const out = [];
+    for (const sub of subs) {
+      if (!isRangeSub(sub)) {
+        const cur = st[`${sub.id}@${today}`] || null;
+        let watching = false;
+        try { watching = Boolean(activeWindow(sub, now, user.window_min)); } catch { /* ignore */ }
+        const row = alertFromState(sub, cur, sub.id);
+        if (!cur) row.watching = watching;
+        if (!cur) row.status = watching ? "watching" : "idle";
+        out.push(row);
+        continue;
       }
-      return {
+      const prefix = `${sub.id}@${today}@`;
+      const trips = [];
+      for (const [k, cur] of Object.entries(st)) {
+        if (!k.startsWith(prefix) || k.endsWith("@disruptions")) continue;
+        if (!cur || typeof cur !== "object" || (!cur.planned && !cur.departurePlanned)) continue;
+        trips.push(alertFromState(sub, cur, k));
+      }
+      trips.sort((a, b) => String(a.departure || "").localeCompare(String(b.departure || "")));
+      if (trips.length) {
+        out.push(...trips);
+        continue;
+      }
+      let watching = false;
+      try { watching = Boolean(outerWindow(sub, now, user.window_min, arriveLeadMin())); } catch { /* ignore */ }
+      const kind = sub.when === "arrive" ? "aankomst " : "";
+      const dest = sub.toName || sub.to || "";
+      out.push({
         id: sub.id,
-        label,
-        watching: true,
-        status: cur.cancelled ? "cancelled" : (cur.alternative ? "alternative" : (cur.delay > 0 ? "delayed" : "ok")),
-        delay: cur.delay || 0,
-        cancelled: Boolean(cur.cancelled),
-        alternative: Boolean(cur.alternative),
-        track: cur.track || cur.plannedTrack || null,
-        departure: cur.departureActual || cur.departurePlanned || sub.time || null,
-        messages: Array.isArray(cur.messages) ? cur.messages.slice(0, 4) : [],
-      };
-    });
+        label: `${kind}${sub.timeFrom}–${sub.timeTo} ${sub.fromName || sub.from || ""} → ${dest}`.trim(),
+        watching,
+        status: watching ? "watching" : "idle",
+        delay: 0,
+        cancelled: false,
+      });
+    }
+    return out;
   }
 
   async function statusFor(user) {
@@ -819,6 +1054,7 @@ export function createApp(opts = {}) {
       server: await safeServer(user),
       threshold: user.delay_threshold,
       window_min: user.window_min,
+      range_margin: user.range_margin ?? 15,
       last_poll: status.last_poll,
       error: status.error,
       digest_enabled: user.digest_enabled,
@@ -834,14 +1070,32 @@ export function createApp(opts = {}) {
 
   function cleanSub(b) {
     if (!b || typeof b !== "object" || Array.isArray(b)) return { error: "ongeldige lijst" };
-    if (!b.from || !(b.to || b.train) || !b.time) return { error: "van, naar/treinnummer en tijd verplicht" };
-    const from = String(b.from).toUpperCase();
+    const from = String(b.from || "").toUpperCase();
     const to = String(b.to || "").toUpperCase();
-    if (!/^[A-Z0-9]{1,10}$/.test(from) || (to && !/^[A-Z0-9]{1,10}$/.test(to))) return { error: "ongeldig station" };
-    const time = String(b.time);
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return { error: "tijd moet HH:MM zijn" };
     const train = b.train ? String(b.train).replace(/\D/g, "").slice(0, 8) : "";
+    const timeText = b.time == null ? "" : String(b.time).trim();
+    const fromText = b.timeFrom == null ? "" : String(b.timeFrom).trim();
+    const toText = b.timeTo == null ? "" : String(b.timeTo).trim();
+    const time = timeText ? parseHHMM(timeText) : "";
+    const timeFrom = fromText ? parseHHMM(fromText) : "";
+    const timeTo = toText ? parseHHMM(toText) : "";
+    if ((timeText && !time) || (fromText && !timeFrom) || (toText && !timeTo)) return { error: "tijd moet HH:MM zijn" };
+    const ranged = Boolean(timeFrom || timeTo);
+    if (ranged && (!timeFrom || !timeTo)) return { error: "van en tot zijn allebei verplicht" };
+    if (ranged && timeFrom > timeTo) return { error: "tot moet later zijn dan van" };
+    if (!ranged && !time) return { error: "van, naar/treinnummer en tijd verplicht" };
+    if (!from || !(to || train)) return { error: "van, naar/treinnummer en tijd verplicht" };
+    if (ranged && !to) return { error: "een bereik heeft een bestemming nodig" };
+    if (ranged && train) return { error: "treinnummer hoort bij één vertrektijd" };
     if (b.train && !train && !to) return { error: "van, naar/treinnummer en tijd verplicht" };
+    if (!/^[A-Z0-9]{1,10}$/.test(from) || (to && !/^[A-Z0-9]{1,10}$/.test(to))) return { error: "ongeldig station" };
+    let when = "depart";
+    if (ranged) {
+      if (b.when != null && String(b.when).trim() !== "") {
+        when = String(b.when).trim();
+        if (when !== "depart" && when !== "arrive") return { error: "kies vertrek of aankomst" };
+      } else if (b.arriveBy === true || b.arrive === true) when = "arrive";
+    }
     const date = typeof b.date === "string" ? b.date.trim() : "";
     if (date && !validDate(date)) return { error: "datum moet JJJJ-MM-DD zijn" };
     let days;
@@ -858,13 +1112,44 @@ export function createApp(opts = {}) {
       fromName: b.fromName ? String(b.fromName).slice(0, 80) : null,
       to,
       toName: b.toName ? String(b.toName).slice(0, 80) : null,
-      time,
+      time: ranged ? timeFrom : time,
       label: b.label ? String(b.label).slice(0, 80) : null,
       train: train || null,
     };
+    if (ranged) {
+      sub.timeFrom = timeFrom;
+      sub.timeTo = timeTo;
+      sub.when = when;
+    }
     if (date) sub.date = date;
     else sub.days = days;
     return { sub };
+  }
+
+  function applySubUpdate(user, id, b) {
+    const existing = store.getSub(user.id, id);
+    if (!existing) return { status: 404, error: "niet gevonden" };
+    let src = b;
+    if (b?.convert) {
+      if (isRangeSub(existing)) return { status: 400, error: "dit is al een bereik" };
+      if (!existing.to) return { status: 400, error: "een bereik heeft een bestemming nodig" };
+      let margin = user.range_margin ?? 15;
+      if (b.margin != null && b.margin !== "") {
+        try { margin = pyInt(b.margin); }
+        catch { return { status: 400, error: "ongeldig getal" }; }
+      }
+      if (margin < 0 || margin > 180) return { status: 400, error: "marge moet tussen 0 en 180 liggen" };
+      const timeFrom = shiftClock(existing.time, -margin);
+      const timeTo = shiftClock(existing.time, margin);
+      if (!timeFrom || !timeTo || timeFrom > timeTo) return { status: 400, error: "marge past niet op deze dag" };
+      src = { ...existing, timeFrom, timeTo, when: b.when === "arrive" ? "arrive" : "depart", train: null };
+    } else if (b && typeof b === "object" && !Array.isArray(b)) {
+      src = { ...existing, ...b, id: existing.id };
+    }
+    const cleaned = cleanSub({ ...src, id: existing.id });
+    if (cleaned.error) return { status: 400, error: cleaned.error };
+    store.updateSub(user.id, cleaned.sub);
+    return { status: 200, sub: cleaned.sub };
   }
 
   function audit(admin, action, target, detail) {
@@ -995,6 +1280,12 @@ export function createApp(opts = {}) {
       store.insertSub(user.id, cleaned.sub);
       return send(res, 200, cleaned.sub);
     }
+    const subUpdate = /^\/api\/subs\/([A-Za-z0-9_-]{1,32})$/.exec(u.pathname);
+    if (subUpdate) {
+      const updated = applySubUpdate(user, subUpdate[1], await readBody(req));
+      if (updated.error) return send(res, updated.status, { error: updated.error });
+      return send(res, 200, updated.sub);
+    }
     if (u.pathname === "/api/import") {
       const b = await readBody(req);
       if (!Array.isArray(b)) return send(res, 400, { error: "ongeldige lijst" });
@@ -1094,6 +1385,11 @@ export function createApp(opts = {}) {
     try {
       if (Object.prototype.hasOwnProperty.call(b, "threshold")) patch.delay_threshold = Math.max(1, pyInt(b.threshold));
       if (Object.prototype.hasOwnProperty.call(b, "window_min")) patch.window_min = Math.max(1, pyInt(b.window_min));
+      if (Object.prototype.hasOwnProperty.call(b, "range_margin")) {
+        const n = pyInt(b.range_margin);
+        if (n < 0 || n > 180) return send(res, 400, { error: "marge moet tussen 0 en 180 liggen" });
+        patch.range_margin = n;
+      }
     } catch { return send(res, 400, { error: "ongeldig getal" }); }
     if (Object.prototype.hasOwnProperty.call(b, "digest_times")) {
       const times = parseDigestTimes(b.digest_times);

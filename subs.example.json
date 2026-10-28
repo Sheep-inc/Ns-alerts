@@ -1,2 +1,3 @@
 [{"from": "UT", "fromName": "Utrecht Centraal", "to": "ASD", "toName": "Amsterdam Centraal", "time": "08:12", "label": "Naar werk", "train": null, "days": ["ma","di","wo","do","vr"]},
- {"from": "UT", "fromName": "Utrecht Centraal", "to": "", "train": "3014", "time": "08:12", "label": "IC 3014", "days": ["ma","wo"]}]
+ {"from": "UT", "fromName": "Utrecht Centraal", "to": "", "train": "3014", "time": "08:12", "label": "IC 3014", "days": ["ma","wo"]},
+ {"from": "UT", "fromName": "Utrecht Centraal", "to": "ASD", "toName": "Amsterdam Centraal", "timeFrom": "16:15", "timeTo": "17:30", "when": "depart", "label": "Naar huis", "days": ["ma","di","wo","do","vr"]}]

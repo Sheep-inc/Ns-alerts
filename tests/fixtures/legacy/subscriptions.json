@@ -1,0 +1,42 @@
+[
+  {
+    "from": "ut",
+    "fromName": "Utrecht Centraal",
+    "to": "asd",
+    "toName": "Amsterdam Centraal",
+    "time": "7:24",
+    "label": "Naar werk"
+  },
+  {
+    "from": "UT",
+    "to": "",
+    "time": "08:12",
+    "train": "3014",
+    "label": "IC 3014",
+    "days": ["ma", "wo"],
+    "id": "e5f60718"
+  },
+  {
+    "from": "UT",
+    "fromName": "Utrecht Centraal",
+    "to": "ASD",
+    "toName": "Amsterdam Centraal",
+    "time": "16:15",
+    "timeFrom": "16:15",
+    "timeTo": "17:30",
+    "when": "depart",
+    "days": ["ma", "di", "wo", "do", "vr"],
+    "id": "b9c0d1e2",
+    "label": "Naar huis"
+  },
+  {
+    "id": "werk0001",
+    "from": "UT",
+    "fromName": "Utrecht Centraal",
+    "to": "ASD",
+    "toName": "Amsterdam Centraal",
+    "time": "08:12",
+    "label": "Naar kantoor",
+    "days": ["ma", "di", "wo", "do", "vr"]
+  }
+]

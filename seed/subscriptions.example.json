@@ -20,5 +20,17 @@
     "train": "3014",
     "days": ["ma", "wo"],
     "id": "e5f60718"
+  },
+  {
+    "from": "UT",
+    "fromName": "Utrecht Centraal",
+    "to": "ASD",
+    "toName": "Amsterdam Centraal",
+    "timeFrom": "16:15",
+    "timeTo": "17:30",
+    "when": "depart",
+    "label": "Naar huis",
+    "days": ["ma", "di", "wo", "do", "vr"],
+    "id": "b9c0d1e2"
   }
 ]
