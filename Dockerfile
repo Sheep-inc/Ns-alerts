@@ -7,6 +7,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY app.js auth.js db.js detect.js digest.js security.js ./
+COPY scripts ./scripts
 COPY static ./static
 COPY seed ./seed
 USER node

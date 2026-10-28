@@ -427,6 +427,7 @@ export function createApp(opts = {}) {
     if (Number.isFinite(cfg.delay_threshold)) patch.delay_threshold = cfg.delay_threshold;
     if (Number.isFinite(cfg.delay_grow)) patch.delay_grow = cfg.delay_grow;
     if (Number.isFinite(cfg.window_min)) patch.window_min = cfg.window_min;
+    if (Number.isFinite(cfg.range_margin)) patch.range_margin = Math.min(180, Math.max(0, Math.trunc(cfg.range_margin)));
     if (cfg.digest_enabled != null) patch.digest_enabled = Boolean(cfg.digest_enabled);
     if (Array.isArray(cfg.digest_times)) patch.digest_times = cfg.digest_times;
     if (cfg.digest_quiet != null) patch.digest_quiet = Boolean(cfg.digest_quiet);

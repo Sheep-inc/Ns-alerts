@@ -27,11 +27,24 @@ Alleen bij een wijziging komt een melding, en alleen naar het topic van die gebr
 
 NS-verzoeken bij een bereik: hoogstens 4 aanroepen van trips v3 per verversing (5 `nextAdvices` per aanroep, dus hoogstens 20 ritten). De verversing loopt alleen in het volgvenster, niet de hele dag, en standaard eens per 180 s. Dezelfde route en hetzelfde bereik delen één cache, net als de rest van de NS-aanroepen (maximaal ongeveer 1 verzoek per seconde). Storingen blijven 5 minuten in de cache. Een extra trips-aanroep voor alternatieven gebeurt alleen als een rit uitvalt, deels uitvalt of minstens 10 minuten vertraging heeft én de al opgehaalde lijst geen latere rit bevat. Een heel druk bereik kan daardoor de laatste ritten missen; maak het bereik dan smaller.
 
+## Bijwerken vanaf de vorige versie
+
+De draaiende installatie heeft `data/subscriptions.json` (vaste vertrektijden), `data/config.json` en `data/state.json`. Zet de app stil vóórdat de nieuwe versie die bestanden voor het eerst importeert.
+
+1. Stoppen: `docker compose stop`, of `sudo systemctl stop ns-alerts`, of het proces van `./run.sh` stoppen.
+2. Code ophalen: `git pull` en `npm ci --omit=dev`. Met Docker: `docker compose build`.
+3. Eerst kijken, er wordt niets geschreven: `npm run migrate -- --dry-run`. Docker: `docker compose run --rm ns-alerts npm run migrate -- --dry-run`.
+4. Uitvoeren: `npm run migrate`. Het script maakt zelf een backup in `data/backups/<tijdstip>/`. Een extra kopie van `data/` mag ook. Vaste tijden blijven werken; ontbrekende config (zoals `window_min`) wordt aangevuld, bestaande waarden blijven staan. Statusregels die niet meer bij een abonnement horen, gaan weg zodat een oude rit niet opnieuw wordt gemeld.
+5. Wil je vaste tijden meteen een vertrekbereik maken: `npm run migrate -- --to-range=15` (zonder getal is de marge 15 minuten, dezelfde dag). Een treinnummer blijft één vertrektijd. Na `--to-range` kan een rit die al vertraging heeft één keer gemeld worden, omdat het oude geheugen bij die ene kloktijd niet meer past.
+6. Starten: `./run.sh`, `sudo systemctl restart ns-alerts`, of `docker compose up -d`.
+
+Opnieuw draaien verandert niets. Mislukt de controle, dan zet het script de backup terug en stopt het met een foutcode. `--data-dir` wijst een andere map aan dan `DATA_DIR` of `./data`.
+
 ## Zelf hosten
 
 1. Node.js 20+ op de VPS. `git clone` de repo, `npm ci --omit=dev`, `cp .env.example .env`. Vul `NS_API_KEY`, `ADMIN_USERNAME` en `ADMIN_PASSWORD` in.
 2. Abonnementen klaarzetten (optioneel): `cp seed/subscriptions.example.json seed/subscriptions.json` en pas aan. Ontbreekt `data/subscriptions.json`, dan wordt de seed gekopieerd. Met een beheerder gaat die lijst naar dat account.
-3. **Docker:** `docker compose up -d --build`. De database staat in `./data` (volume). `./seed` is read-only. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Healthcheck op `/healthz`.
+3. **Docker:** `docker compose up -d --build`. De database staat in `./data` (volume). `./seed` is read-only. De container draait als gebruiker `node` (uid 1000) met een read-only rootfs; `./data` moet voor die gebruiker beschrijfbaar zijn (`sudo chown -R 1000:1000 data`). Healthcheck op `/healthz`. Migratie: `docker compose run --rm ns-alerts npm run migrate`.
 4. **Of systemd:** code in `/opt/ns-alerts`, `sudo cp ns-alerts.service /etc/systemd/system/`, pas `User` aan, `sudo systemctl enable --now ns-alerts`. Node 22+ als `/usr/bin/node`.
 5. Abonnementen meenemen tussen servers: ingelogd `curl -b cookies.txt http://oud:8780/api/export > subs.json` en op de nieuwe server `curl -b cookies.txt -X POST -H 'x-csrf-token: …' --data-binary @subs.json http://nieuw:8780/api/import`. Voorbeeld: `subs.example.json`.
 6. Zet de UI achter een reverse proxy met HTTPS en zet `COOKIE_SECURE=1`. Zie `SECURITY.md`.

@@ -304,13 +304,14 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
     writeFileSync(path.join(dataDir, "subscriptions.json"), JSON.stringify([
       { id: "a1b2c3d4", from: "UT", to: "ASD", time: "08:12", days: ["ma"] },
     ]));
-    writeFileSync(path.join(dataDir, "config.json"), JSON.stringify({ ntfy_topic: "legacy-topic-value", delay_threshold: 4, window_min: 30 }));
+    writeFileSync(path.join(dataDir, "config.json"), JSON.stringify({ ntfy_topic: "legacy-topic-value", delay_threshold: 4, window_min: 30, range_margin: 22 }));
     const app = await boot({ base: root, dataDir, port: 0, env: env() });
     try {
       const admin = await login(app);
       const st = await admin("/api/status");
       assert.equal(st.body.topic, "legacy-topic-value");
       assert.equal(st.body.threshold, 4);
+      assert.equal(st.body.range_margin, 22);
       assert.equal((await admin("/api/subs")).body[0].from, "UT");
       const req = client(app);
       await req("/login");
