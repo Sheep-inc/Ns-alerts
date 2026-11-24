@@ -16,7 +16,7 @@ function tmp() { return mkdtempSync(path.join(tmpdir(), "ns-sec-")); }
 
 async function boot() {
   const base = tmp();
-  const app = createApp({ base: root, dataDir: path.join(base, "data"), port: 0, env: { PORT: "0", UI_PASSWORD: "" } });
+  const app = createApp({ base: root, dataDir: path.join(base, "data"), port: 0, env: { PORT: "0", UI_PASSWORD: "", AUTO_MIGRATE: "0" } });
   open.push(app);
   await app.start();
   app._base = base;

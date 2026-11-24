@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createApp } from "../app.js";
 import { openDb } from "../db.js";
-import { parseArgs, runMigration } from "../scripts/migrate.js";
+import { autoMigrateEnabled, migrationApplied, parseArgs, runAutoMigrate, runMigration } from "../scripts/migrate.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests/fixtures/legacy");
@@ -195,7 +195,7 @@ describe("migrate old json", () => {
       base: root,
       dataDir: dir,
       port: 0,
-      env: { PORT: "0", ADMIN_USERNAME: "admin", ADMIN_PASSWORD: "admin-pass-1", SCRYPT_N: "1024" },
+      env: { PORT: "0", ADMIN_USERNAME: "admin", ADMIN_PASSWORD: "admin-pass-1", SCRYPT_N: "1024", AUTO_MIGRATE: "0" },
     });
     await app.start();
     try {
@@ -226,5 +226,39 @@ describe("migrate old json", () => {
     const missing = spawnSync(process.execPath, [script, "--data-dir", path.join(dir, "nope")], { encoding: "utf8" });
     assert.equal(missing.status, 1);
     assert.match(missing.stdout, /datamap bestaat niet/);
+  });
+
+  test("startup conversion runs once, leaves the lead unset, and can be switched off", async () => {
+    assert.equal(autoMigrateEnabled({}), true);
+    assert.equal(autoMigrateEnabled({ AUTO_MIGRATE: "false" }), false);
+    const dir = stage();
+    const lines = [];
+    const first = await runAutoMigrate({ dataDir: dir, env: { AUTO_MIGRATE: "1" }, log: (level, message) => lines.push(`${level} ${message}`) });
+    assert.equal(first.ok, true, first.text || lines.join("\n"));
+    const subs = read(dir, "subscriptions.json");
+    const office = subs.find((s) => s.id === "werk0001");
+    assert.equal(office.timeFrom, "07:57");
+    assert.equal(office.timeTo, "08:27");
+    assert.equal(office.leadMin, undefined);
+    const train = subs.find((s) => s.train === "3014");
+    assert.equal(train.timeFrom, undefined);
+    assert.equal(await migrationApplied(dir), true);
+    assert.match(lines.join("\n"), /vertrekbereik/);
+    const backups = readdirSync(path.join(dir, "backups"));
+    const second = await runAutoMigrate({ dataDir: dir, env: {}, log: () => {} });
+    assert.equal(second.already, true);
+    assert.deepEqual(readdirSync(path.join(dir, "backups")), backups);
+    writeFileSync(path.join(dir, "subscriptions.json"), JSON.stringify([{ id: "later0001", from: "UT", to: "ASD", time: "09:00", days: ["ma"] }]));
+    await runAutoMigrate({ dataDir: dir, env: {}, log: () => {} });
+    assert.equal(read(dir, "subscriptions.json")[0].time, "09:00");
+    assert.equal(read(dir, "subscriptions.json")[0].timeFrom, undefined);
+    const off = stage();
+    const skipped = await runAutoMigrate({ dataDir: off, env: { AUTO_MIGRATE: "false" }, log: () => {} });
+    assert.equal(skipped.skipped, true);
+    assert.equal(read(off, "subscriptions.json").find((s) => s.id === "werk0001").time, "08:12");
+    const empty = mkdtempSync(path.join(tmpdir(), "ns-migrate-empty-"));
+    const quiet = await runAutoMigrate({ dataDir: empty, env: {}, log: () => {} });
+    assert.equal(quiet.ok, true);
+    assert.equal(quiet.changed, false);
   });
 });

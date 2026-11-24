@@ -306,3 +306,32 @@ test("range picks the first transit leg and the final arrival, and ignores walks
   assert.match(body, /^Vertrek 16:28/);
   assert.match(body, /Aankomst 17:18 → 17:26/);
 });
+
+test("cancelled leg without a trip-level cancelled flag is still cancelled", () => {
+  const data = F("bnc_edc_strike.json");
+  const cancelled = data.trips.find((t) => t.status === "CANCELLED");
+  assert.equal(cancelled.cancelled, undefined);
+  const state = detect.stateFromTrip(cancelled);
+  assert.equal(state.cancelled, true);
+  assert.equal(state.disrupted, false);
+  assert.equal(state.departurePlanned, "16:57");
+  const disrupted = detect.stateFromTrip(data.trips[1]);
+  assert.equal(disrupted.cancelled, false);
+  assert.equal(disrupted.disrupted, true);
+  const ev = detect.diff(null, { ...state, disruptions: [] });
+  assert.match(ev[0][1], /Rijdt niet meer \(was gepland 16:57\)/);
+  const near = detect.nearestDeparture(data.trips, "16:52", 15);
+  assert.equal(near.clock, "16:57");
+  assert.equal(near.within, true);
+  assert.equal(detect.timetableGoneText("16:52", "16:57"), "Trein van 16:52 bestaat niet meer in de dienstregeling, dichtstbijzijnde: 16:57");
+});
+
+test("a line disruption matches BNC and EDC via affected stations, not the title", () => {
+  const data = F("bnc_edc_strike.json");
+  const hit = detect.relevantDisruptions(data.disruptions, ["BNC", "EDC"]);
+  assert.deepEqual(hit.map((d) => d.id), ["keolis-strike", "consequence-only"]);
+  assert.equal(hit[0].cause, "staking Keolis");
+  assert.equal(hit[0].title, "Amersfoort - Ede-Wageningen");
+  assert.deepEqual(detect.relevantDisruptions(data.disruptions, ["UT"]), []);
+  assert.equal(detect.disruptionStations(data.disruptions[2]).has("BNC"), false);
+});

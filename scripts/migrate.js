@@ -130,6 +130,8 @@ export function normalizeSub(raw, { toRange = false, margin = 15, index = 0, use
   if (train && !ranged) sub.train = train;
   if (date) sub.date = date;
   else sub.days = days;
+  const lead = Number(raw.leadMin ?? raw.lead_min);
+  if ([30, 60, 90, 120].includes(lead)) sub.leadMin = lead;
   return { sub, notes: { converted, keptTrain, daysFilled, idMade, normalizedTime: timeText && timeText !== sub.time && !converted } };
 }
 
@@ -378,6 +380,7 @@ function rowToSub(row, cols) {
     sub.timeTo = row.time_to;
     sub.when = row.when_mode === "arrive" ? "arrive" : "depart";
   }
+  if (has("lead_min") && row.lead_min != null) sub.leadMin = row.lead_min;
   if (row.date) sub.date = row.date;
   else {
     try { sub.days = JSON.parse(row.days || "[]"); }
@@ -436,7 +439,7 @@ async function writeSqlite(file, plans) {
 }
 
 function differentSub(next, prev) {
-  const keys = ["id", "from", "to", "time", "timeFrom", "timeTo", "when", "train", "date", "label", "fromName", "toName"];
+  const keys = ["id", "from", "to", "time", "timeFrom", "timeTo", "when", "train", "date", "label", "fromName", "toName", "leadMin"];
   if (keys.some((key) => (next[key] || "") !== (prev[key] || ""))) return true;
   return JSON.stringify(next.days || null) !== JSON.stringify(prev.days || null);
 }
@@ -616,6 +619,122 @@ function validateWritten({ dataDir, subsFile, cfgFile, stateFile, subsRead, stat
   if (!fs.existsSync(dataDir)) return { ok: false, error: "datamap verdwenen" };
   if (!subsRead.missing && !fs.existsSync(subsFile)) return { ok: false, error: "subscriptions.json verdwenen" };
   return { ok: true };
+}
+
+const MIGRATION_ID = "to-range-v1";
+
+function markerFile(dataDir) {
+  return path.join(dataDir, "schema_migrations.json");
+}
+
+export function autoMigrateEnabled(env = process.env) {
+  const raw = env?.AUTO_MIGRATE;
+  if (raw == null || String(raw).trim() === "") return true;
+  return !["0", "false", "nee", "off", "no"].includes(String(raw).trim().toLowerCase());
+}
+
+export function readMigrationMarker(dataDir) {
+  const file = markerFile(dataDir);
+  if (!fs.existsSync(file)) return null;
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch { return null; }
+}
+
+function markerHas(data, id) {
+  return Array.isArray(data?.applied) && data.applied.includes(id);
+}
+
+async function sqliteMarker(dataDir) {
+  const file = path.join(dataDir, "app.sqlite");
+  if (!fs.existsSync(file)) return false;
+  try {
+    const Database = await loadBetterSqlite();
+    const db = new Database(file, { readonly: true, fileMustExist: true });
+    try {
+      const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get();
+      if (!has) return false;
+      const row = db.prepare("SELECT v FROM meta WHERE k = ?").get("schema_migration_to_range_v1");
+      return Boolean(row?.v);
+    } finally { db.close(); }
+  } catch { return false; }
+}
+
+export async function migrationApplied(dataDir) {
+  if (markerHas(readMigrationMarker(dataDir), MIGRATION_ID)) return true;
+  return sqliteMarker(dataDir);
+}
+
+async function writeMigrationMarker(dataDir, margin) {
+  const file = markerFile(dataDir);
+  const data = readMigrationMarker(dataDir) || { applied: [] };
+  if (!Array.isArray(data.applied)) data.applied = [];
+  if (!data.applied.includes(MIGRATION_ID)) data.applied.push(MIGRATION_ID);
+  data[MIGRATION_ID] = { at: new Date().toISOString(), margin };
+  writeJson(file, data);
+  const dbFile = path.join(dataDir, "app.sqlite");
+  if (!fs.existsSync(dbFile)) return;
+  try {
+    const { openDb } = await import("../db.js");
+    const store = openDb(dbFile);
+    try { store.metaSet("schema_migration_to_range_v1", data[MIGRATION_ID].at); }
+    finally { store.close(); }
+  } catch { /* marker file is enough */ }
+}
+
+function fixedRoute(sub) {
+  return Boolean(sub?.time) && !(sub.timeFrom && sub.timeTo) && sub.to && !sub.train;
+}
+
+async function hasFixedRoute(dataDir) {
+  const subsFile = path.join(dataDir, "subscriptions.json");
+  if (fs.existsSync(subsFile)) {
+    try {
+      const list = JSON.parse(fs.readFileSync(subsFile, "utf8"));
+      if (Array.isArray(list) && list.some(fixedRoute)) return true;
+    } catch { /* the real migrate reports the json error */ }
+  }
+  const snap = await readSqliteAsync(path.join(dataDir, "app.sqlite"));
+  if (!snap || snap.error || !snap.rows) return false;
+  return snap.rows.some((row) => fixedRoute(rowToSub(row, snap.cols)));
+}
+
+/** One-time --to-range on startup. Does not set leadMin, so subs keep the default lead. */
+export async function runAutoMigrate({ dataDir, env = process.env, log = (level, message) => console.log(`${level} ${message}`) } = {}) {
+  const dir = path.resolve(dataDir || env.DATA_DIR || "data");
+  if (!autoMigrateEnabled(env)) {
+    log("INFO", "automatische migratie uit (AUTO_MIGRATE)");
+    return { ok: true, skipped: true };
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  if (await migrationApplied(dir)) {
+    log("INFO", "automatische migratie al uitgevoerd (to-range-v1)");
+    return { ok: true, skipped: true, already: true };
+  }
+  const marginRaw = env.AUTO_MIGRATE_MARGIN;
+  const margin = marginRaw == null || String(marginRaw).trim() === "" ? 15 : Number(marginRaw);
+  if (!Number.isInteger(margin) || margin < 0 || margin > 180) {
+    log("WARNING", "AUTO_MIGRATE_MARGIN ongeldig, automatische migratie overgeslagen");
+    return { ok: true, skipped: true };
+  }
+  try {
+    if (!(await hasFixedRoute(dir))) {
+      await writeMigrationMarker(dir, margin);
+      log("INFO", "automatische migratie: geen vaste vertrektijd om te zetten");
+      return { ok: true, changed: false };
+    }
+    const result = await runMigration({ dataDir: dir, toRange: true, margin });
+    for (const line of String(result.text || "").split("\n")) if (line) log("INFO", line);
+    if (!result.ok) {
+      log("WARNING", `automatische migratie mislukt, app start toch: ${result.error || ""}`);
+      return result;
+    }
+    await writeMigrationMarker(dir, margin);
+    return result;
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    log("WARNING", `automatische migratie mislukt, app start toch: ${error}`);
+    return { ok: false, error };
+  }
 }
 
 async function main(argv) {

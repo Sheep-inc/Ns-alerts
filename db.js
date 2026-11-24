@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   label TEXT,
   train TEXT,
   days TEXT,
-  date TEXT
+  date TEXT,
+  lead_min INTEGER
 );
 CREATE TABLE IF NOT EXISTS trip_state (
   user_id TEXT NOT NULL,
@@ -128,6 +129,7 @@ function subFromRow(r) {
     sub.timeTo = r.time_to;
     sub.when = r.when_mode === "arrive" ? "arrive" : "depart";
   }
+  if (r.lead_min != null) sub.leadMin = r.lead_min;
   if (r.date) sub.date = r.date;
   else sub.days = JSON.parse(r.days || "[]");
   return sub;
@@ -168,6 +170,7 @@ export function openDb(file) {
   if (!subCols.some((c) => c.name === "time_from")) db.exec("ALTER TABLE subscriptions ADD COLUMN time_from TEXT");
   if (!subCols.some((c) => c.name === "time_to")) db.exec("ALTER TABLE subscriptions ADD COLUMN time_to TEXT");
   if (!subCols.some((c) => c.name === "when_mode")) db.exec("ALTER TABLE subscriptions ADD COLUMN when_mode TEXT");
+  if (!subCols.some((c) => c.name === "lead_min")) db.exec("ALTER TABLE subscriptions ADD COLUMN lead_min INTEGER");
   const q = (sql) => db.prepare(sql);
 
   function meta(k) {
@@ -260,21 +263,23 @@ export function openDb(file) {
     listSubs(userId) { return q("SELECT * FROM subscriptions WHERE user_id = ? ORDER BY time, rowid").all(userId).map(subFromRow); },
     getSub(userId, id) { return subFromRow(q("SELECT * FROM subscriptions WHERE user_id = ? AND id = ?").get(userId, id)); },
     insertSub(userId, s) {
-      q(`INSERT INTO subscriptions (id, user_id, from_code, from_name, to_code, to_name, time, time_from, time_to, when_mode, label, train, days, date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      q(`INSERT INTO subscriptions (id, user_id, from_code, from_name, to_code, to_name, time, time_from, time_to, when_mode, label, train, days, date, lead_min)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         s.id, userId, s.from, s.fromName || null, s.to || "", s.toName || null, s.time,
         s.timeFrom || null, s.timeTo || null, s.timeFrom ? (s.when === "arrive" ? "arrive" : "depart") : null,
         s.label || null, s.train || null,
         s.date ? null : JSON.stringify(s.days || []), s.date || null,
+        s.leadMin ?? null,
       );
     },
     updateSub(userId, s) {
-      return q(`UPDATE subscriptions SET from_code = ?, from_name = ?, to_code = ?, to_name = ?, time = ?, time_from = ?, time_to = ?, when_mode = ?, label = ?, train = ?, days = ?, date = ?
+      return q(`UPDATE subscriptions SET from_code = ?, from_name = ?, to_code = ?, to_name = ?, time = ?, time_from = ?, time_to = ?, when_mode = ?, label = ?, train = ?, days = ?, date = ?, lead_min = ?
          WHERE user_id = ? AND id = ?`).run(
         s.from, s.fromName || null, s.to || "", s.toName || null, s.time,
         s.timeFrom || null, s.timeTo || null, s.timeFrom ? (s.when === "arrive" ? "arrive" : "depart") : null,
         s.label || null, s.train || null,
         s.date ? null : JSON.stringify(s.days || []), s.date || null,
+        s.leadMin ?? null,
         userId, s.id,
       ).changes;
     },

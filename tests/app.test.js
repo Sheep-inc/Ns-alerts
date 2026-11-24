@@ -22,6 +22,7 @@ function env(extra = {}) {
     ADMIN_USERNAME: "admin",
     ADMIN_PASSWORD: "admin-pass-1",
     SCRYPT_N: "1024",
+    AUTO_MIGRATE: "0",
     ...extra,
   };
 }
@@ -129,11 +130,11 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
     mkdirSync(seedDir, { recursive: true });
     const payload = [{ from: "UT", fromName: "Utrecht Centraal", time: "08:12", to: "ASD", days: ["ma"], id: "a1b2c3d4" }];
     writeFileSync(seedFile, JSON.stringify(payload));
-    const app = await boot({ base, dataDir, env: { UI_PASSWORD: "", PORT: "0", SCRYPT_N: "1024" }, port: 0 });
+    const app = await boot({ base, dataDir, env: { UI_PASSWORD: "", PORT: "0", SCRYPT_N: "1024", AUTO_MIGRATE: "0" }, port: 0 });
     try {
       assert.deepEqual(JSON.parse(readFileSync(app.subsFile, "utf8")), payload);
       writeFileSync(seedFile, "[]");
-      const again = await boot({ base, dataDir, env: { UI_PASSWORD: "", PORT: "0", SEED_FILE: seedFile, SCRYPT_N: "1024" }, port: 0 });
+      const again = await boot({ base, dataDir, env: { UI_PASSWORD: "", PORT: "0", SEED_FILE: seedFile, SCRYPT_N: "1024", AUTO_MIGRATE: "0" }, port: 0 });
       assert.deepEqual(JSON.parse(readFileSync(again.subsFile, "utf8")), payload);
       await again.close();
     } finally { await app.close(); rmSync(base, { recursive: true, force: true }); }
@@ -141,7 +142,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
 
   test("missing seed leaves subscriptions empty and the api closed", async () => {
     const base = tmp();
-    const app = await boot({ base, dataDir: path.join(base, "data"), env: { PORT: "0", SCRYPT_N: "1024" }, port: 0 });
+    const app = await boot({ base, dataDir: path.join(base, "data"), env: { PORT: "0", SCRYPT_N: "1024", AUTO_MIGRATE: "0" }, port: 0 });
     try {
       assert.equal(existsSync(app.subsFile), false);
       const anon = client(app);
@@ -774,7 +775,7 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
       const state = app.store.readState(userId);
       assert.equal(state["range0001@2026-10-15@16:22@3022"].cancelled, true);
       assert.equal(state["range0001@2026-10-15@16:28@5600"].arrivalDelay, 8);
-      assert.equal(state["range0001@2026-10-15@16:52@3040"], undefined);
+      assert.equal(state["range0001@2026-10-15@16:52@3040"].delay, 0);
       const tripUrls = seen.filter((u) => u.includes("/api/v3/trips"));
       assert.equal(tripUrls.length, 1);
       const q = new URL(tripUrls[0]).searchParams;
@@ -914,14 +915,76 @@ describe("ns-alerts http", { concurrency: 1 }, () => {
     });
     try {
       const admin = await login(app);
-      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "page0001", from: "UT", to: "ASD", timeFrom: "08:00", timeTo: "12:00", days: ["do"] }) });
+      await admin("/api/subs", { method: "POST", body: JSON.stringify({ id: "page0001", from: "UT", to: "ASD", timeFrom: "08:00", timeTo: "12:00", days: ["do"], leadMin: 30 }) });
       await app.pollOnce(new Date(2026, 9, 15, 8, 0, 0));
       const tripUrls = seen.filter((u) => u.includes("/api/v3/trips"));
       assert.equal(tripUrls.length, 4);
       assert.ok(tripUrls.every((u) => new URL(u).searchParams.get("nextAdvices") === "5" && new URL(u).searchParams.get("searchForArrival") == null));
-      const keys = Object.keys(app.store.readState(app.store.getUserByName("admin").id)).filter((k) => !k.endsWith("@disruptions"));
+      const keys = Object.keys(app.store.readState(app.store.getUserByName("admin").id)).filter((k) => !k.endsWith("@disruptions") && !k.endsWith("@departures"));
       assert.equal(keys.length, 7);
       assert.equal(hits.length, 0);
+    } finally {
+      globalThis.fetch = realFetch;
+      await app.close();
+      await new Promise((r) => ntfy.srv.close(r));
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("Barneveld strike: shifted time, cancelled trips and a line disruption are announced an hour ahead", async () => {
+    const base = tmp();
+    const data = JSON.parse(readFileSync(path.join(root, "tests/fixtures/bnc_edc_strike.json"), "utf8"));
+    const seen = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (!u.startsWith("https://gateway.apiportal.ns.nl")) return realFetch(url, opts);
+      seen.push(u);
+      const body = u.includes("/disruptions") ? data.disruptions : { trips: data.trips };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const hits = [];
+    const ntfy = await listen((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => { hits.push(JSON.parse(Buffer.concat(chunks).toString("utf8"))); res.writeHead(200); res.end(); });
+    });
+    const app = await boot({
+      base: root,
+      dataDir: path.join(base, "data"),
+      port: 0,
+      env: env({ NS_API_KEY: "test-key", NTFY_SERVER: ntfy.url, NTFY_ALLOW_PRIVATE: "1", DIGEST_ENABLED: "0", RANGE_REFRESH_SEC: "0" }),
+    });
+    const at = new Date(2026, 10, 24, 15, 55, 0);
+    try {
+      const admin = await login(app);
+      const badLead = await admin("/api/subs", { method: "POST", body: JSON.stringify({ from: "BNC", to: "EDC", time: "16:52", days: ["di"], leadMin: 45 }) });
+      assert.equal(badLead.status, 400);
+      const fixed = await admin("/api/subs", {
+        method: "POST",
+        body: JSON.stringify({ id: "fixed1652", from: "BNC", fromName: "Barneveld Centrum", to: "EDC", toName: "Ede Centrum", time: "16:52", days: ["ma", "di", "wo", "do"] }),
+      });
+      assert.equal(fixed.body.leadMin, undefined);
+      assert.equal((await admin("/api/status")).body.monitor_lead, 60);
+      const ranged = await admin("/api/subs", {
+        method: "POST",
+        body: JSON.stringify({ id: "range1607", from: "BNC", fromName: "Barneveld Centrum", to: "EDC", toName: "Ede Centrum", timeFrom: "16:07", timeTo: "17:37", when: "depart", days: ["ma", "di", "wo", "do"], leadMin: 60 }),
+      });
+      assert.equal(ranged.body.leadMin, 60);
+      await app.pollOnce(at);
+      const text = hits.map((h) => `${h.title}\n${h.message}`).join("\n");
+      assert.match(text, /Trein van 16:52 bestaat niet meer in de dienstregeling, dichtstbijzijnde: 16:57/);
+      assert.match(text, /Rijdt niet meer \(was gepland 16:57\)/);
+      assert.match(text, /Rijdt niet meer \(was gepland 17:27\)/);
+      assert.match(text, /Rit verstoord/);
+      assert.match(text, /Amersfoort - Ede-Wageningen, staking Keolis/);
+      assert.equal(text.includes("Amersfoort - Zwolle"), false);
+      const strikeMessages = hits.filter((h) => h.message.includes("staking Keolis"));
+      assert.equal(strikeMessages.length, 2);
+      const before = hits.length;
+      await app.pollOnce(new Date(2026, 10, 24, 15, 57, 0));
+      assert.equal(hits.length, before);
+      assert.ok(seen.some((u) => u.includes("/disruptions/v3")));
     } finally {
       globalThis.fetch = realFetch;
       await app.close();
