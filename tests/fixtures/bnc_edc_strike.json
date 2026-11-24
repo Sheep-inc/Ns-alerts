@@ -1,0 +1,105 @@
+{
+  "trips": [
+    {
+      "status": "DISRUPTION",
+      "legs": [{
+        "cancelled": false,
+        "product": { "number": "32257", "shortCategoryName": "SPR" },
+        "origin": { "name": "Barneveld Centrum", "stationCode": "BNC", "plannedDateTime": "2026-11-24T15:57:00+0100", "actualDateTime": "2026-11-24T15:57:00+0100", "plannedTrack": "1", "actualTrack": "1" },
+        "destination": { "name": "Ede Centrum", "stationCode": "EDC", "plannedDateTime": "2026-11-24T16:12:00+0100", "actualDateTime": "2026-11-24T16:12:00+0100" }
+      }]
+    },
+    {
+      "status": "DISRUPTION",
+      "legs": [{
+        "cancelled": false,
+        "product": { "number": "32267", "shortCategoryName": "SPR" },
+        "origin": { "name": "Barneveld Centrum", "stationCode": "BNC", "plannedDateTime": "2026-11-24T16:27:00+0100", "actualDateTime": "2026-11-24T16:27:00+0100", "plannedTrack": "1", "actualTrack": "1" },
+        "destination": { "name": "Ede Centrum", "stationCode": "EDC", "plannedDateTime": "2026-11-24T16:42:00+0100", "actualDateTime": "2026-11-24T16:42:00+0100" }
+      }]
+    },
+    {
+      "status": "CANCELLED",
+      "legs": [{
+        "cancelled": true,
+        "product": { "number": "32277", "shortCategoryName": "SPR" },
+        "origin": { "name": "Barneveld Centrum", "stationCode": "BNC", "plannedDateTime": "2026-11-24T16:57:00+0100", "plannedTrack": "1" },
+        "destination": { "name": "Ede Centrum", "stationCode": "EDC", "plannedDateTime": "2026-11-24T17:12:00+0100" }
+      }]
+    },
+    {
+      "status": "CANCELLED",
+      "legs": [{
+        "cancelled": true,
+        "product": { "number": "32287", "shortCategoryName": "SPR" },
+        "origin": { "name": "Barneveld Centrum", "stationCode": "BNC", "plannedDateTime": "2026-11-24T17:27:00+0100", "plannedTrack": "1" },
+        "destination": { "name": "Ede Centrum", "stationCode": "EDC", "plannedDateTime": "2026-11-24T17:42:00+0100" }
+      }]
+    },
+    {
+      "status": "CANCELLED",
+      "legs": [{
+        "cancelled": true,
+        "product": { "number": "32297", "shortCategoryName": "SPR" },
+        "origin": { "name": "Barneveld Centrum", "stationCode": "BNC", "plannedDateTime": "2026-11-24T17:57:00+0100", "plannedTrack": "1" },
+        "destination": { "name": "Ede Centrum", "stationCode": "EDC", "plannedDateTime": "2026-11-24T18:12:00+0100" }
+      }]
+    }
+  ],
+  "disruptions": [
+    {
+      "id": "keolis-strike",
+      "type": "DISRUPTION",
+      "title": "Amersfoort - Ede-Wageningen.",
+      "isActive": true,
+      "start": "2026-11-24T10:36:00+0100",
+      "end": "2026-11-25T01:00:00+0100",
+      "publicationSections": [{
+        "section": {
+          "stations": [
+            { "stationCode": "AMF" },
+            { "stationCode": "BNC" },
+            { "stationCode": "EDC" },
+            { "stationCode": "ED" }
+          ]
+        }
+      }],
+      "timespans": [{
+        "cause": { "label": "staking Keolis" },
+        "situation": { "label": "er rijden geen treinen" },
+        "start": "2026-11-24T10:36:00+0100",
+        "end": "2026-11-25T01:00:00+0100"
+      }]
+    },
+    {
+      "id": "amf-zl",
+      "type": "DISRUPTION",
+      "title": "Amersfoort - Zwolle.",
+      "isActive": true,
+      "publicationSections": [{
+        "section": { "stations": [{ "stationCode": "AMF" }, { "stationCode": "ZL" }] }
+      }],
+      "timespans": [{ "cause": { "label": "defect spoor" } }]
+    },
+    {
+      "id": "title-only",
+      "type": "DISRUPTION",
+      "title": "Amersfoort - Ede-Wageningen.",
+      "isActive": true,
+      "publicationSections": [{
+        "section": { "stations": [{ "stationCode": "ZL" }] }
+      }]
+    },
+    {
+      "id": "consequence-only",
+      "type": "DISRUPTION",
+      "title": "Gevolg op de Valleilijn",
+      "isActive": true,
+      "publicationSections": [{
+        "section": { "stations": [{ "stationCode": "AMF" }] },
+        "consequence": { "section": { "stations": [{ "stationCode": "EDC" }] } }
+      }],
+      "timespans": [{ "cause": { "label": "werkzaamheden" } }]
+    }
+  ]
+}

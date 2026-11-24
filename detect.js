@@ -95,7 +95,8 @@ export function stateFromTrip(trip) {
   const legs = transitLegs(trip);
   const first = legs[0] || {};
   const o = first.origin || {};
-  const cancelled = trip.status === "CANCELLED" || legs.some((l) => l.cancelled);
+  const legCancelled = legs.some((l) => l?.cancelled === true || String(l?.cancelled || "").toLowerCase() === "true");
+  const cancelled = trip?.cancelled === true || String(trip?.status || "").toUpperCase() === "CANCELLED" || legCancelled;
   const alt = trip.status === "ALTERNATIVE_TRANSPORT" || legs.some((l) => l.alternativeTransport);
   const msgs = [];
   for (const m of trip.messages || []) msgs.push(m.text || m.message);
@@ -128,6 +129,7 @@ export function stateFromTrip(trip) {
     plannedTrack: o.plannedTrack ?? null,
     track: o.actualTrack || o.plannedTrack || null,
     cancelled: Boolean(cancelled),
+    disrupted: !cancelled && String(trip?.status || "").toUpperCase() === "DISRUPTION",
     alternative: Boolean(alt),
     partCancelled: Boolean(part) && !cancelled,
     partFrom: part ? place(part.origin) : "",
@@ -226,20 +228,75 @@ export function describeDisruption(d) {
   };
 }
 
+function addStationCodes(set, list) {
+  for (const s of list || []) {
+    const code = s?.stationCode || s?.code;
+    if (code) set.add(String(code).toUpperCase());
+  }
+}
+
+/** Stations a disruption actually affects, from publicationSections, not the title. */
+export function disruptionStations(d) {
+  const found = new Set();
+  for (const ps of d?.publicationSections || []) {
+    addStationCodes(found, ps?.section?.stations);
+    addStationCodes(found, ps?.consequence?.section?.stations);
+    addStationCodes(found, ps?.stations);
+  }
+  return found;
+}
+
 export function relevantDisruptions(disruptions, stationCodes) {
   const codes = new Set([...stationCodes].filter(Boolean).map((c) => String(c).toUpperCase()));
   const out = [];
   for (const d of disruptions || []) {
     if (d.isActive === false) continue;
-    const found = new Set();
-    for (const ps of d.publicationSections || []) {
-      for (const s of ps.section?.stations || []) found.add(String(s.stationCode || "").toUpperCase());
-    }
     let hit = false;
-    for (const c of found) if (c && codes.has(c)) hit = true;
+    for (const c of disruptionStations(d)) if (c && codes.has(c)) hit = true;
     if (hit) out.push(describeDisruption(d));
   }
   return out;
+}
+
+function clockDiff(a, b) {
+  const diff = minutesBetween(a, b);
+  return diff == null ? null : Math.abs(diff);
+}
+
+/** Nearest trip to a clock time. `within` is true when it is at most marginMin away and not exact. */
+export function nearestDeparture(trips, wanted, marginMin = 15) {
+  let best = null;
+  for (const trip of trips || []) {
+    const clock = tripEndpoints(trip).departureClock;
+    const diff = clockDiff(wanted, clock);
+    if (!clock || diff == null || diff === 0) continue;
+    if (!best || diff < best.diff || (diff === best.diff && clock < best.clock)) best = { trip, clock, diff };
+  }
+  if (!best) return null;
+  return { ...best, within: best.diff <= marginMin };
+}
+
+export function closestClock(target, clocks) {
+  let best = "";
+  let bestDiff = Infinity;
+  for (const clock of clocks || []) {
+    const diff = clockDiff(target, clock);
+    if (diff == null || diff === 0 || diff >= bestDiff) continue;
+    best = clock;
+    bestDiff = diff;
+  }
+  return best;
+}
+
+export function timetableGoneText(planned, nearest) {
+  if (nearest) return `Trein van ${planned} bestaat niet meer in de dienstregeling, dichtstbijzijnde: ${nearest}`;
+  return `Trein van ${planned} bestaat niet meer in de dienstregeling`;
+}
+
+export function disruptionNotice(items) {
+  const lines = (items || []).map((item) => disruptionPhrase(item)).filter(Boolean);
+  const strike = (items || []).some((item) => /staking|strike/i.test(`${item?.cause || ""} ${item?.title || ""}`));
+  return { body: lines.join("\n"), priority: strike ? "high" : "default" };
 }
 
 function shownDeparture(cur) {
@@ -354,7 +411,7 @@ function freshDisruptions(prev, cur) {
   const seen = new Set((prev?.disruptions || []).map((x) => x.id));
   const out = [];
   for (const x of cur.disruptions || []) {
-    if (!seen.has(x.id)) out.push(["default", disruptionPhrase(x)]);
+    if (!seen.has(x.id)) out.push([/staking|strike/i.test(`${x.cause || ""} ${x.title || ""}`) ? "high" : "default", disruptionPhrase(x)]);
   }
   return out;
 }
@@ -393,6 +450,7 @@ export function diff(prev, cur, threshold = 3, grow = 5) {
     ev.push(["high", `Deels uitgevallen${span}`]);
   }
   if (cur.changeNotPossible && !p.changeNotPossible) ev.push(["high", "Overstap niet mogelijk"]);
+  if (cur.disrupted && !p.disrupted) ev.push(["high", "Rit verstoord"]);
 
   const ap = cur.arrivalPlanned || "";
   const aa = cur.arrivalActual || "";

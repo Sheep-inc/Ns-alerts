@@ -26,10 +26,18 @@
 <div class="days"><label><input id="once" type="checkbox"> Eenmalig</label></div>
 <label id="dateLbl" hidden>Datum</label><input id="date" type="date" hidden>
 <label id="daysLbl">Dagen</label><div class="days" id="days"></div>
+<label for="lead">Controleren vanaf</label>
+<select id="lead" aria-label="Minuten vóór vertrek">
+<option value="">Standaard</option>
+<option value="30">30 minuten vóór vertrek</option>
+<option value="60">60 minuten vóór vertrek</option>
+<option value="90">90 minuten vóór vertrek</option>
+<option value="120">120 minuten vóór vertrek</option>
+</select>
+<small id="leadHint">Leeg volgt de standaard (60 minuten vóór vertrek, of MONITOR_LEAD_MINUTES).</small>
 <button id="addBtn" type="button">Toevoegen</button></div>
 <div class="card"><button id="testBtn" type="button">Test melding</button> <span id="tr"></span>
 <label>Vertragingsdrempel (min)</label><input id="thr" type="number" min="1">
-<label>Minuten vóór vertrek</label><input id="win" type="number" min="1">
 <label>Marge om een vaste tijd tot bereik te maken (± min)</label><input id="margin" type="number" min="0" max="180" value="15">
 <button id="saveThrBtn" type="button">Opslaan</button></div>
 <div class="card"><b>Dagelijkse check</b>

@@ -1,4 +1,6 @@
 const D = ["ma", "di", "wo", "do", "vr", "za", "zo"];
+const LEADS = [30, 60, 90, 120];
+let monitorLead = 60;
 const sel = { from: null, to: null };
 const $ = (i) => document.getElementById(i);
 const pad = (n) => String(n).padStart(2, "0");
@@ -81,13 +83,24 @@ function fillSubs(subs) {
     line.append(el("b", { text: `${x.when === "arrive" ? "aankomst " : ""}${span}` }));
     line.append(document.createTextNode(` ${x.fromName || x.from || ""} \u2192 ${x.toName || x.to || ""}${x.train ? ` (trein ${x.train})` : ""}`));
     const meta = el("small");
+    meta.append(document.createTextNode(`vanaf ${x.leadMin || monitorLead} min `));
+    if (!x.leadMin) meta.append(document.createTextNode("(standaard) "));
     if (x.label) meta.append(document.createTextNode(`${x.label} `));
     if (x.date) {
       meta.append(el("span", { class: "badge", text: "eenmalig" }));
       meta.append(document.createTextNode(` ${x.date}`));
     } else meta.append(document.createTextNode((x.days || []).join(" ")));
     text.append(line, document.createElement("br"), meta);
+    const lead = el("select", { "aria-label": "Controleren vanaf" });
+    lead.append(el("option", { value: "", text: "Standaard" }));
+    for (const mins of LEADS) {
+      const opt = el("option", { value: String(mins), text: `${mins} min` });
+      if (x.leadMin === mins) opt.selected = true;
+      lead.append(opt);
+    }
+    lead.addEventListener("change", () => setLead(x.id, lead.value));
     const actions = el("div", { class: "actions" });
+    actions.append(lead);
     if (!x.timeFrom && x.to) {
       const conv = el("button", { type: "button", class: "link", text: "Bereik" });
       conv.addEventListener("click", () => toRange(x.id, x.time || ""));
@@ -105,7 +118,9 @@ async function load() {
   if (!statusRes.ok) return;
   const s = await statusRes.json();
     if (document.activeElement !== $("thr")) $("thr").value = s.threshold;
-    if (document.activeElement !== $("win")) $("win").value = s.window_min;
+    monitorLead = s.monitor_lead || 60;
+    const hint = $("leadHint");
+    if (hint) hint.textContent = `Leeg volgt de standaard (${monitorLead} minuten vóór vertrek).`;
     if (document.activeElement !== $("margin")) $("margin").value = s.range_margin ?? 15;
   if (!digestRev) {
     $("digestOn").checked = s.digest_enabled !== false;
@@ -210,9 +225,18 @@ async function add() {
     b.timeTo = $("timeTo").value;
     b.when = $("arrive").checked ? "arrive" : "depart";
   }
+  if ($("lead").value) b.leadMin = Number($("lead").value);
   if ($("once").checked) b.date = $("date").value || todayStr();
   else b.days = [...document.querySelectorAll("#days input:checked")].map((e) => e.value);
   const r = await api("/api/subs", { method: "POST", body: b });
+  if (!r.ok) alert((await r.json()).error);
+  load();
+}
+
+async function setLead(id, value) {
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(String(id || ""))) return;
+  const body = { leadMin: value ? Number(value) : null };
+  const r = await api(`/api/subs/${encodeURIComponent(id)}`, { method: "POST", body });
   if (!r.ok) alert((await r.json()).error);
   load();
 }
@@ -241,7 +265,7 @@ async function testMsg() {
 }
 
 async function saveThr() {
-  await api("/api/settings", { method: "POST", body: { threshold: $("thr").value, window_min: $("win").value, range_margin: $("margin").value } });
+  await api("/api/settings", { method: "POST", body: { threshold: $("thr").value, range_margin: $("margin").value } });
   load();
 }
 

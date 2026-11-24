@@ -26,6 +26,22 @@ import { MAX_BODY, clientIp, isAllowedNotifyUrl, isCrossSite, makeLimiter, maskS
 const BASE = path.dirname(fileURLToPath(import.meta.url));
 const NS = "https://gateway.apiportal.ns.nl";
 export const DAYS = ["ma", "di", "wo", "do", "vr", "za", "zo"];
+export const LEAD_CHOICES = [30, 60, 90, 120];
+
+/** Default minutes before departure. Unset subscriptions use this, not a stored 30. */
+export function monitorLeadFromEnv(env = process.env) {
+  const raw = env?.MONITOR_LEAD_MINUTES;
+  if (raw == null || String(raw).trim() === "") return 60;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 240) return 60;
+  return n;
+}
+
+export function leadFor(sub, env = process.env) {
+  const chosen = Number(sub?.leadMin);
+  if (LEAD_CHOICES.includes(chosen)) return chosen;
+  return monitorLeadFromEnv(env);
+}
 /** NS trips v3 documents at most 5 next advices per call. Four pages cover a busy window without a long burst. */
 const MAX_RANGE_PAGES = 4;
 const RANGE_PAGE_ADVICES = 5;
@@ -609,57 +625,116 @@ export function createApp(opts = {}) {
     }
   }
 
-  async function checkSub(sub, dep) {
-    let cur;
+  async function loadRouteTrips(sub, dep, previousAdvices, nextAdvices) {
+    const data = await nsGet("/reisinformatie-api/api/v3/trips", {
+      fromStation: sub.from,
+      toStation: sub.to,
+      dateTime: isoOffsetSeconds(dep),
+      previousAdvices,
+      nextAdvices,
+    });
+    return Array.isArray(data?.trips) ? data.trips : [];
+  }
+
+  async function loadDisruptions() {
+    try {
+      const dis = await nsGet("/disruptions/v3", { isActive: "true" }, 300);
+      return Array.isArray(dis) ? dis : (dis?.payload || []);
+    } catch (e) {
+      if (e instanceof NoKey) throw e;
+      log("WARNING", `disruptions failed: ${errStr(e)}`);
+      return [];
+    }
+  }
+
+  function disruptionBucket(st, sub, today) {
+    const dKey = `${sub.id}@${today}@disruptions`;
+    const seen = new Set(Array.isArray(st[dKey]?.ids) ? st[dKey].ids : []);
+    return { dKey, seen };
+  }
+
+  async function notifyText(user, sub, title, body, prio) {
+    log("INFO", `NOTIFY ${user.username}: ${title}`);
+    try { await notifyUser(user, title, body, prio, "alert", { click: detect.plannerUrl(sub) }); }
+    catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+  }
+
+  async function notifyTrip(user, sub, cur, events) {
+    if (!events.length) return;
+    const [title, body, prio, click] = detect.formatMsg(sub, cur, events);
+    log("INFO", `NOTIFY ${user.username}: ${title}`);
+    try { await notifyUser(user, title, body, prio, "alert", { click }); }
+    catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+  }
+
+  async function notifyFreshDisruptions(user, sub, disList, st, today, extraStations = []) {
+    const { dKey, seen } = disruptionBucket(st, sub, today);
+    const relevant = detect.relevantDisruptions(disList, [sub.from, sub.to, ...extraStations]);
+    const fresh = relevant.filter((item) => item?.id != null && !seen.has(item.id));
+    if (fresh.length) {
+      const notice = detect.disruptionNotice(fresh);
+      const route = `${sub.fromName || sub.from} → ${sub.toName || sub.to || ""}`.trim();
+      await notifyText(user, sub, route, notice.body, notice.priority);
+      for (const item of fresh) seen.add(item.id);
+    }
+    for (const item of relevant) if (item?.id != null) seen.add(item.id);
+    st[dKey] = { ids: [...seen] };
+    return seen;
+  }
+
+  async function checkSub(sub, dep, marginMin = 15) {
+    let cur = null;
     let trips = null;
     let deps = null;
+    let shift = null;
     if (sub.train) {
       const d = await nsGet("/reisinformatie-api/api/v2/departures", { station: sub.from, maxJourneys: 40 });
       deps = d?.payload?.departures || [];
       const m = deps.filter((x) => String(x?.product?.number) === String(sub.train));
-      if (!m.length) return null;
+      if (!m.length) return { cur: null, trips: null, deps, shift: null };
       cur = detect.stateFromDeparture(m[0]);
       cur.stations = [sub.from];
     } else {
-      const d = await nsGet("/reisinformatie-api/api/v3/trips", {
-        fromStation: sub.from,
-        toStation: sub.to,
-        dateTime: isoOffsetSeconds(dep),
-        previousAdvices: 1,
-        nextAdvices: 2,
-      });
-      trips = d.trips || [];
-      const t = detect.pickTrip(trips, sub.time);
-      if (!t) return null;
-      cur = detect.stateFromTrip(t);
+      trips = await loadRouteTrips(sub, dep, 1, 2);
+      let trip = detect.pickTrip(trips, sub.time);
+      if (!trip) {
+        const wider = await loadRouteTrips(sub, dep, 5, 5);
+        if (wider.length) trips = wider;
+        trip = detect.pickTrip(trips, sub.time);
+      }
+      if (!trip) {
+        const near = detect.nearestDeparture(trips, sub.time, marginMin);
+        shift = { from: sub.time, to: near?.clock || "", within: Boolean(near?.within) };
+        if (near?.within) trip = near.trip;
+      }
+      if (!trip) return { cur: null, trips, deps, shift };
+      cur = detect.stateFromTrip(trip);
+      if (shift) {
+        cur.shiftFrom = shift.from;
+        cur.shiftTo = shift.to;
+      }
     }
-    const stns = new Set([...(cur.stations || []), sub.from, sub.to]);
-    try {
-      const dis = await nsGet("/disruptions/v3", { isActive: "true" }, 300);
-      const list = Array.isArray(dis) ? dis : (dis?.payload || []);
-      cur.disruptions = detect.relevantDisruptions(list, stns);
-    } catch (e) {
-      if (e instanceof NoKey) throw e;
-      log("WARNING", `disruptions failed: ${errStr(e)}`);
-      cur.disruptions = [];
-    }
+    const disList = await loadDisruptions();
+    cur.disruptions = detect.relevantDisruptions(disList, [...(cur.stations || []), sub.from, sub.to]);
     cur.alternatives = [];
+    cur.disruptionList = disList;
     if (cur.cancelled || (cur.delay || 0) >= 10 || cur.partCancelled) {
       try {
+        const after = (cur.planned || "").slice(11, 16) || sub.time;
         cur.alternatives = sub.train
           ? detect.alternativeDepartures(deps, {
-            after: (cur.planned || "").slice(11, 16) || sub.time,
+            after,
             skipNumber: sub.train,
             direction: cur.direction || "",
           })
-          : await laterTrains(sub, dep, cur, trips);
+          : await laterTrains({ ...sub, time: after }, dep, cur, trips);
       } catch (e) {
         if (e instanceof NoKey) throw e;
         log("WARNING", `alternatives failed: ${errStr(e)}`);
         cur.alternatives = [];
       }
     }
-    return cur;
+    return { cur, trips, deps, shift };
   }
 
   function pruneFinished(when) {
@@ -671,42 +746,51 @@ export function createApp(opts = {}) {
   }
 
   async function monitorFixed(user, sub, when, st, today) {
-    const dep = activeWindow(sub, when, user.window_min);
+    const dep = activeWindow(sub, when, leadFor(sub, env));
     if (!dep) return false;
-    const cur = await checkSub(sub, dep);
-    if (!cur) return false;
+    const found = await checkSub(sub, dep, user.range_margin ?? 15);
+    const { dKey, seen } = disruptionBucket(st, sub, today);
     const k = `${sub.id}@${today}`;
     const prev = Object.prototype.hasOwnProperty.call(st, k) ? st[k] : null;
-    const ev = detect.diff(prev, cur, user.delay_threshold, user.delay_grow);
-    st[k] = cur;
-    if (ev.length) {
-      const [title, body, prio, click] = detect.formatMsg(sub, cur, ev);
-      log("INFO", `NOTIFY ${user.username}: ${title}`);
-      try { await notifyUser(user, title, body, prio, "alert", { click }); }
-      catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+    const shift = found.shift;
+    if (shift && (prev?.shiftFrom !== shift.from || prev?.shiftTo !== shift.to)) {
+      const route = `${sub.fromName || sub.from} → ${sub.toName || sub.to || ""}`.trim();
+      await notifyText(user, sub, `${sub.time} ${route}`.trim(), detect.timetableGoneText(shift.from, shift.to), "high");
     }
+    const cur = found.cur;
+    if (!cur) {
+      st[k] = { shiftFrom: shift?.from || sub.time, shiftTo: shift?.to || "", planned: null };
+      await notifyFreshDisruptions(user, sub, await loadDisruptions(), st, today);
+      return false;
+    }
+    if (!cur.disruptionList) cur.disruptions = cur.disruptions || [];
+    const disList = cur.disruptionList || [];
+    delete cur.disruptionList;
+    for (const item of cur.disruptions || []) if (item?.id != null) seen.add(item.id);
+    const baseline = prev?.planned ? prev : null;
+    const ev = detect.diff(baseline, cur, user.delay_threshold, user.delay_grow);
+    st[k] = cur;
+    st[dKey] = { ids: [...seen] };
+    await notifyTrip(user, sub, cur, ev);
+    await notifyFreshDisruptions(user, sub, disList, st, today, cur.stations || []);
     return oneTimeFinished(sub, when, cur.arrival);
   }
 
   async function monitorRange(user, sub, when, st, today) {
-    if (!outerWindow(sub, when, user.window_min, arriveLeadMin())) return false;
+    if (!outerWindow(sub, when, leadFor(sub, env), arriveLeadMin())) return false;
     const list = await resolveRange(sub, sub.date || today);
-    let disList = [];
-    try {
-      const dis = await nsGet("/disruptions/v3", { isActive: "true" }, 300);
-      disList = Array.isArray(dis) ? dis : (dis?.payload || []);
-    } catch (e) {
-      if (e instanceof NoKey) throw e;
-      log("WARNING", `disruptions failed: ${errStr(e)}`);
-    }
-    const dKey = `${sub.id}@${today}@disruptions`;
-    const seen = new Set(Array.isArray(st[dKey]?.ids) ? st[dKey].ids : []);
+    const disList = await loadDisruptions();
+    const { dKey, seen } = disruptionBucket(st, sub, today);
+    const clocks = [];
     for (const trip of list) {
       const ends = detect.tripEndpoints(trip);
-      if (!ends.departureClock || !tripInWindow(ends.departure, when, user.window_min)) continue;
+      if (!ends.departureClock) continue;
+      clocks.push(ends.departureClock);
       let cur;
       try { cur = detect.stateFromTrip(trip); }
       catch (e) { log("WARNING", `rit ${sub.id} ${ends.departureClock} overgeslagen: ${errStr(e)}`); continue; }
+      const watch = cur.cancelled || cur.disrupted || cur.partCancelled || tripInWindow(ends.departure, when, leadFor(sub, env));
+      if (!watch) continue;
       const stations = new Set([...(cur.stations || []), sub.from, sub.to]);
       cur.disruptions = detect.relevantDisruptions(disList, stations);
       cur.alternatives = [];
@@ -730,24 +814,34 @@ export function createApp(opts = {}) {
       const baseline = {
         delay: 0,
         cancelled: false,
+        disrupted: false,
         track: cur.plannedTrack,
         alternative: false,
         partCancelled: false,
         changeNotPossible: false,
         arrivalDelay: 0,
-        ...(prev && typeof prev === "object" ? prev : {}),
+        ...(prev && typeof prev === "object" && !prev.gone ? prev : {}),
         disruptions: [...seen].map((id) => ({ id })),
       };
       const ev = detect.diff(baseline, cur, user.delay_threshold, user.delay_grow);
       st[k] = cur;
       for (const item of cur.disruptions || []) if (item && item.id != null) seen.add(item.id);
-      if (!ev.length) continue;
-      const [title, body, prio, click] = detect.formatMsg({ ...sub, time: ends.departureClock }, cur, ev);
-      log("INFO", `NOTIFY ${user.username}: ${title}`);
-      try { await notifyUser(user, title, body, prio, "alert", { click }); }
-      catch (e) { log("WARNING", `ntfy failed: ${errStr(e)}`); }
+      await notifyTrip(user, { ...sub, time: ends.departureClock }, cur, ev);
     }
+    const clockKey = `${sub.id}@${today}@departures`;
+    const prevClocks = Array.isArray(st[clockKey]?.clocks) ? st[clockKey].clocks : [];
+    const announced = new Set(st[clockKey]?.announced || []);
+    for (const clock of prevClocks) {
+      if (clocks.includes(clock) || announced.has(clock)) continue;
+      const alreadyCancelled = Object.entries(st).some(([key, value]) => key.startsWith(`${sub.id}@${today}@${clock}@`) && value?.cancelled);
+      announced.add(clock);
+      if (alreadyCancelled) continue;
+      const route = `${sub.fromName || sub.from} → ${sub.toName || sub.to || ""}`.trim();
+      await notifyText(user, sub, `${clock} ${route}`.trim(), detect.timetableGoneText(clock, detect.closestClock(clock, clocks)), "high");
+    }
+    st[clockKey] = { clocks, announced: [...announced] };
     st[dKey] = { ids: [...seen] };
+    await notifyFreshDisruptions(user, sub, disList, st, today);
     return oneTimeFinished(sub, when);
   }
 
@@ -1012,7 +1106,7 @@ export function createApp(opts = {}) {
       if (!isRangeSub(sub)) {
         const cur = st[`${sub.id}@${today}`] || null;
         let watching = false;
-        try { watching = Boolean(activeWindow(sub, now, user.window_min)); } catch { /* ignore */ }
+        try { watching = Boolean(activeWindow(sub, now, leadFor(sub, env))); } catch { /* ignore */ }
         const row = alertFromState(sub, cur, sub.id);
         if (!cur) row.watching = watching;
         if (!cur) row.status = watching ? "watching" : "idle";
@@ -1032,7 +1126,7 @@ export function createApp(opts = {}) {
         continue;
       }
       let watching = false;
-      try { watching = Boolean(outerWindow(sub, now, user.window_min, arriveLeadMin())); } catch { /* ignore */ }
+      try { watching = Boolean(outerWindow(sub, now, leadFor(sub, env), arriveLeadMin())); } catch { /* ignore */ }
       const kind = sub.when === "arrive" ? "aankomst " : "";
       const dest = sub.toName || sub.to || "";
       out.push({
@@ -1054,6 +1148,7 @@ export function createApp(opts = {}) {
       server: await safeServer(user),
       threshold: user.delay_threshold,
       window_min: user.window_min,
+      monitor_lead: monitorLeadFromEnv(env),
       range_margin: user.range_margin ?? 15,
       last_poll: status.last_poll,
       error: status.error,
@@ -1123,6 +1218,13 @@ export function createApp(opts = {}) {
     }
     if (date) sub.date = date;
     else sub.days = days;
+    const leadRaw = Object.prototype.hasOwnProperty.call(b, "leadMin") ? b.leadMin
+      : (Object.prototype.hasOwnProperty.call(b, "lead_min") ? b.lead_min : undefined);
+    if (leadRaw != null && leadRaw !== "") {
+      const lead = Number(leadRaw);
+      if (!LEAD_CHOICES.includes(lead)) return { error: "controleer vanaf 30, 60, 90 of 120 minuten" };
+      sub.leadMin = lead;
+    }
     return { sub };
   }
 
@@ -1509,6 +1611,15 @@ export function createApp(opts = {}) {
     fs.mkdirSync(dataDir, { recursive: true });
     store = openDb(path.join(dataDir, "app.sqlite"));
     copySeed();
+    try { store.close(); } catch { /* reopen after migrate */ }
+    store = null;
+    try {
+      const { runAutoMigrate } = await import("./scripts/migrate.js");
+      await runAutoMigrate({ dataDir, env, log });
+    } catch (e) {
+      log("WARNING", `automatische migratie mislukt: ${errStr(e)}`);
+    }
+    store = openDb(path.join(dataDir, "app.sqlite"));
     const admin = await ensureAdmin();
     await migrateLegacy(admin);
     if (!apiKey()) log("WARNING", "NS_API_KEY missing — UI draait, poller staat stil tot de key er is (zet in .env en herstart)");
